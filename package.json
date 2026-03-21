@@ -5,9 +5,9 @@
   "main": "src/server/index.js",
   "type": "commonjs",
   "bin": {
-    "nodio-server": "./src/server/index.js",
-    "nodio-node": "./src/node/index.js",
-    "nodio": "./src/user/index.js"
+    "nodio-server": "src/server/index.js",
+    "nodio-node": "src/node/index.js",
+    "nodio": "src/user/index.js"
   },
   "scripts": {
     "start:server": "node ./src/server/index.js",
