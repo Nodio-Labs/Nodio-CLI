@@ -40,6 +40,27 @@ npm run start:server
 
 Server API base: `http://127.0.0.1:4000/api`
 
+## Deploy On Render (Central Server)
+
+Use a **Web Service** for the central server.
+
+- Build Command: `npm install`
+- Start Command: `npm run start:server`
+- Health Check Path: `/api/health`
+
+Required environment variables on Render:
+- `NODIO_MONGO_URI` (MongoDB Atlas URI)
+
+Optional environment variables:
+- `NODIO_HEARTBEAT_INTERVAL_MS`
+- `NODIO_OFFLINE_AFTER_MISSES`
+- `NODIO_MIN_REPLICAS`
+- `NODIO_EMERGENCY_REPLICA_FLOOR`
+
+Notes:
+- Render sets `PORT` automatically, and the server now uses it.
+- Donor nodes (`nodio-node`) should run on persistent machines or VMs, not on ephemeral web-service instances.
+
 ## Start Donor Node CLI
 
 ```bash
