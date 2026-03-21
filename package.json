@@ -1,0 +1,33 @@
+{
+  "name": "nodio-cli",
+  "version": "1.0.0",
+  "description": "Nodio distributed storage network",
+  "main": "src/server/index.js",
+  "type": "commonjs",
+  "bin": {
+    "nodio-server": "./src/server/index.js",
+    "nodio-node": "./src/node/index.js",
+    "nodio": "./src/user/index.js"
+  },
+  "scripts": {
+    "start:server": "node ./src/server/index.js",
+    "start:node": "node ./src/node/index.js",
+    "start:cli": "node ./src/user/index.js",
+    "lint": "node -e \"console.log('No linter configured')\""
+  },
+  "keywords": [
+    "distributed-storage",
+    "cli",
+    "nodio"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.11.0",
+    "commander": "^14.0.1",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "mongoose": "^8.18.0",
+    "uuid": "^13.0.0"
+  }
+}

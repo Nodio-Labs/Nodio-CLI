@@ -1,0 +1,8 @@
+node_modules/
+.env
+.nodio-node-*/
+image.png
+image-downloaded.png
+test-output.md
+*.log
+.DS_Store
