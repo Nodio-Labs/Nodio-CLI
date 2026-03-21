@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: nodio-server
+    env: node
+    rootDir: .
+    buildCommand: npm install
+    startCommand: npm run start:server
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: NODIO_MONGO_URI
+        sync: false
+      - key: NODIO_HEARTBEAT_INTERVAL_MS
+        value: "30000"
+      - key: NODIO_OFFLINE_AFTER_MISSES
+        value: "3"
+      - key: NODIO_MIN_REPLICAS
+        value: "5"
+      - key: NODIO_EMERGENCY_REPLICA_FLOOR
+        value: "2"
