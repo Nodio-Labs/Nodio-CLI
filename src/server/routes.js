@@ -58,12 +58,27 @@ function buildRoutes(config) {
         existingByNodeKey = await NodeModel.findOne({ nodeKey }).lean();
       }
 
+      if (existingByNodeKey && deviceKey && existingByNodeKey.deviceKey && existingByNodeKey.deviceKey !== deviceKey) {
+        return res.status(409).json({ error: 'nodeKey belongs to a different device' });
+      }
+
       if (existingByNodeKey && nodeId && nodeId !== existingByNodeKey.nodeId) {
         return res.status(409).json({ error: 'nodeKey is already associated with a different nodeId' });
       }
 
       let effectiveNodeId = nodeId || existingByNodeKey?.nodeId || null;
       let claimedKnownNode = null;
+
+      if (effectiveNodeId && deviceKey) {
+        const existingByNodeId = await NodeModel.findOne({ nodeId: effectiveNodeId }).lean();
+        if (
+          existingByNodeId
+          && existingByNodeId.deviceKey
+          && existingByNodeId.deviceKey !== deviceKey
+        ) {
+          return res.status(409).json({ error: 'nodeId belongs to a different device' });
+        }
+      }
 
       if (!effectiveNodeId && deviceKey && normalizedKnownNodeIds.length > 0) {
         claimedKnownNode = await NodeModel.findOneAndUpdate(
