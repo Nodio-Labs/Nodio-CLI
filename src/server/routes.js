@@ -343,15 +343,21 @@ function buildRoutes(config) {
       const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, node.url]));
 
       const shardDeleteFailures = [];
+      let deleteAttempts = 0;
+      let deleteSuccesses = 0;
+      let deleteSkippedOffline = 0;
       for (const placement of placements) {
         const nodeUrl = nodeUrlMap.get(placement.nodeId);
         if (!nodeUrl) {
+          deleteSkippedOffline += 1;
           continue;
         }
 
         const deleteUrl = `${normalizeUrl(nodeUrl)}/shards/${placement.shardId}`;
+        deleteAttempts += 1;
         try {
           await axios.delete(deleteUrl, { timeout: 15000 });
+          deleteSuccesses += 1;
         } catch (error) {
           shardDeleteFailures.push({
             shardId: placement.shardId,
@@ -376,6 +382,9 @@ function buildRoutes(config) {
         fileId,
         deletedShards: shardIds.length,
         deletedPlacements: placements.length,
+        donorDeleteAttempts: deleteAttempts,
+        donorDeleteSuccesses: deleteSuccesses,
+        donorDeleteSkippedOffline: deleteSkippedOffline,
         shardDeleteFailures
       });
     } catch (error) {

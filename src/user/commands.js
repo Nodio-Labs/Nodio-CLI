@@ -210,7 +210,10 @@ async function deleteFile(options) {
   console.log('Delete complete');
   console.log(`fileId: ${payload.fileId || fileId}`);
   console.log(`deletedShards: ${payload.deletedShards || 0}`);
-  console.log(`deletedPlacements: ${payload.deletedPlacements || 0}`);
+  console.log(`deletedPlacementsMetadata: ${payload.deletedPlacements || 0}`);
+  console.log(`donorDeleteAttempts: ${payload.donorDeleteAttempts || 0}`);
+  console.log(`donorDeleteSuccesses: ${payload.donorDeleteSuccesses || 0}`);
+  console.log(`donorDeleteSkippedOffline: ${payload.donorDeleteSkippedOffline || 0}`);
   console.log(`shardDeleteFailures: ${(payload.shardDeleteFailures || []).length}`);
 }
 
