@@ -31,10 +31,10 @@ function buildRoutes(config) {
 
   router.post('/nodes/register', async (req, res, next) => {
     try {
-      const { nodeId, url, capacityBytes, freeBytes } = req.body;
+      const { nodeId, deviceKey, nodeKey, url, capacityBytes, freeBytes } = req.body;
 
-      if (!nodeId || !url) {
-        return res.status(400).json({ error: 'nodeId and url are required' });
+      if (!url) {
+        return res.status(400).json({ error: 'url is required' });
       }
 
       const capacity = Number(capacityBytes);
@@ -42,11 +42,28 @@ function buildRoutes(config) {
       if (!Number.isFinite(capacity) || capacity <= 0 || !Number.isFinite(free) || free < 0) {
         return res.status(400).json({ error: 'capacityBytes and freeBytes must be valid numbers' });
       }
+      if (deviceKey && typeof deviceKey !== 'string') {
+        return res.status(400).json({ error: 'deviceKey must be a string when provided' });
+      }
+
+      let existingByNodeKey = null;
+      if (nodeKey) {
+        existingByNodeKey = await NodeModel.findOne({ nodeKey }).lean();
+      }
+
+      if (existingByNodeKey && nodeId && nodeId !== existingByNodeKey.nodeId) {
+        return res.status(409).json({ error: 'nodeKey is already associated with a different nodeId' });
+      }
+
+      const effectiveNodeId = nodeId || existingByNodeKey?.nodeId || `donor-${uuidv4().slice(0, 8)}`;
 
       const node = await NodeModel.findOneAndUpdate(
-        { nodeId },
+        { nodeId: effectiveNodeId },
         {
           $set: {
+            nodeId: effectiveNodeId,
+            ...(deviceKey ? { deviceKey } : {}),
+            ...(nodeKey ? { nodeKey } : {}),
             url,
             capacityBytes: capacity,
             freeBytes: free,

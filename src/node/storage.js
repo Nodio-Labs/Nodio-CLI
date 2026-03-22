@@ -1,5 +1,6 @@
 const fs = require('fs/promises');
 const path = require('path');
+const crypto = require('crypto');
 const { sha256Hex } = require('../common/crypto');
 
 class LocalShardStore {
@@ -7,6 +8,7 @@ class LocalShardStore {
     this.baseDir = baseDir;
     this.indexFile = path.join(baseDir, 'index.json');
     this.shardsDir = path.join(baseDir, 'shards');
+    this.identityFile = path.join(baseDir, 'node-identity.json');
   }
 
   async init() {
@@ -29,6 +31,53 @@ class LocalShardStore {
 
   async writeIndex(index) {
     await fs.writeFile(this.indexFile, JSON.stringify(index, null, 2), 'utf-8');
+  }
+
+  async readIdentity() {
+    try {
+      const raw = await fs.readFile(this.identityFile, 'utf-8');
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async writeIdentity(identity) {
+    await fs.writeFile(this.identityFile, JSON.stringify(identity, null, 2), 'utf-8');
+  }
+
+  async getIdentity() {
+    return this.readIdentity();
+  }
+
+  async getOrCreateNodeKey() {
+    const identity = await this.readIdentity();
+    if (identity.nodeKey) {
+      return identity.nodeKey;
+    }
+
+    const nodeKey = crypto.randomUUID();
+    await this.writeIdentity({ ...identity, nodeKey, updatedAt: new Date().toISOString() });
+    return nodeKey;
+  }
+
+  async getSavedNodeId() {
+    const identity = await this.readIdentity();
+    return identity.nodeId || null;
+  }
+
+  async saveAssignedNodeId(nodeId) {
+    if (!nodeId) {
+      return;
+    }
+
+    const identity = await this.readIdentity();
+    await this.writeIdentity({
+      ...identity,
+      nodeId,
+      updatedAt: new Date().toISOString()
+    });
   }
 
   shardPath(shardId) {

@@ -1,6 +1,7 @@
 const express = require('express');
 const axios = require('axios');
 const { LocalShardStore } = require('./storage');
+const { getOrCreateDeviceKey } = require('./deviceIdentity');
 
 function normalizeUrl(url) {
   return String(url || '').replace(/\/+$/, '');
@@ -8,7 +9,7 @@ function normalizeUrl(url) {
 
 class NodioNodeRuntime {
   constructor(options) {
-    this.nodeId = options.nodeId;
+    this.nodeId = options.nodeId || null;
     this.serverUrl = normalizeUrl(options.serverUrl);
     this.publicUrl = normalizeUrl(options.publicUrl);
     this.port = Number(options.port);
@@ -20,6 +21,11 @@ class NodioNodeRuntime {
 
   async start() {
     await this.shardStore.init();
+
+    if (!this.nodeId) {
+      this.nodeId = await this.shardStore.getSavedNodeId();
+    }
+
     await this.startShardServer();
     await this.registerNode();
     await this.sendHeartbeat();
@@ -93,12 +99,20 @@ class NodioNodeRuntime {
   }
 
   async registerNode() {
+    const deviceKey = await getOrCreateDeviceKey();
+    const nodeKey = await this.shardStore.getOrCreateNodeKey();
+
     const response = await axios.post(`${this.serverUrl}/api/nodes/register`, {
       nodeId: this.nodeId,
+      deviceKey,
+      nodeKey,
       url: this.publicUrl,
       capacityBytes: this.capacityBytes,
       freeBytes: await this.freeBytes()
     });
+
+    this.nodeId = response.data.nodeId;
+    await this.shardStore.saveAssignedNodeId(this.nodeId);
 
     const interval = Number(response.data.heartbeatIntervalMs);
     if (Number.isFinite(interval) && interval > 0) {

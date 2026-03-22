@@ -2,7 +2,6 @@
 const path = require('path');
 const os = require('os');
 const { Command } = require('commander');
-const { v4: uuidv4 } = require('uuid');
 const { NodioNodeRuntime } = require('./runtime');
 
 const program = new Command();
@@ -10,7 +9,7 @@ const program = new Command();
 program
   .name('nodio-node')
   .description('Nodio donor node CLI')
-  .option('--node-id <id>', 'unique node ID', uuidv4())
+  .option('--node-id <id>', 'unique node ID (optional; auto-assigned and persisted if omitted)')
   .option('--server <url>', 'central server URL', 'http://127.0.0.1:4000')
   .option('--host <host>', 'host/IP exposed to network', '127.0.0.1')
   .option('--port <port>', 'port to expose shard API', '5001')

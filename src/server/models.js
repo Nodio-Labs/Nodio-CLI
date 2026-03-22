@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const nodeSchema = new mongoose.Schema(
   {
     nodeId: { type: String, required: true, unique: true, index: true },
+    deviceKey: { type: String, index: true },
+    nodeKey: { type: String, unique: true, sparse: true, index: true },
     url: { type: String, required: true },
     capacityBytes: { type: Number, required: true, min: 1 },
     freeBytes: { type: Number, required: true, min: 0 },
