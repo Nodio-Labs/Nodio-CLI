@@ -67,6 +67,43 @@ class LocalShardStore {
     return identity.nodeId || null;
   }
 
+  async discoverKnownNodeIds() {
+    const known = new Set();
+
+    const current = await this.readIdentity();
+    if (current.nodeId) {
+      known.add(current.nodeId);
+    }
+
+    const parentDir = path.dirname(this.baseDir);
+    let entries = [];
+    try {
+      entries = await fs.readdir(parentDir, { withFileTypes: true });
+    } catch {
+      return [...known];
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const identityPath = path.join(parentDir, entry.name, 'node-identity.json');
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const raw = await fs.readFile(identityPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        if (parsed?.nodeId && typeof parsed.nodeId === 'string') {
+          known.add(parsed.nodeId);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return [...known];
+  }
+
   async saveAssignedNodeId(nodeId) {
     if (!nodeId) {
       return;

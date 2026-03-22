@@ -101,11 +101,13 @@ class NodioNodeRuntime {
   async registerNode() {
     const deviceKey = await getOrCreateDeviceKey();
     const nodeKey = await this.shardStore.getOrCreateNodeKey();
+    const knownNodeIds = await this.shardStore.discoverKnownNodeIds();
 
     const response = await axios.post(`${this.serverUrl}/api/nodes/register`, {
       nodeId: this.nodeId,
       deviceKey,
       nodeKey,
+      knownNodeIds,
       url: this.publicUrl,
       capacityBytes: this.capacityBytes,
       freeBytes: await this.freeBytes()

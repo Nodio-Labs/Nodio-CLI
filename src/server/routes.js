@@ -31,7 +31,7 @@ function buildRoutes(config) {
 
   router.post('/nodes/register', async (req, res, next) => {
     try {
-      const { nodeId, deviceKey, nodeKey, url, capacityBytes, freeBytes } = req.body;
+      const { nodeId, deviceKey, nodeKey, knownNodeIds, url, capacityBytes, freeBytes } = req.body;
 
       if (!url) {
         return res.status(400).json({ error: 'url is required' });
@@ -45,6 +45,13 @@ function buildRoutes(config) {
       if (deviceKey && typeof deviceKey !== 'string') {
         return res.status(400).json({ error: 'deviceKey must be a string when provided' });
       }
+      if (knownNodeIds !== undefined && !Array.isArray(knownNodeIds)) {
+        return res.status(400).json({ error: 'knownNodeIds must be an array when provided' });
+      }
+
+      const normalizedKnownNodeIds = Array.isArray(knownNodeIds)
+        ? [...new Set(knownNodeIds.filter((value) => typeof value === 'string' && value.length > 0))]
+        : [];
 
       let existingByNodeKey = null;
       if (nodeKey) {
@@ -55,7 +62,25 @@ function buildRoutes(config) {
         return res.status(409).json({ error: 'nodeKey is already associated with a different nodeId' });
       }
 
-      const effectiveNodeId = nodeId || existingByNodeKey?.nodeId || `donor-${uuidv4().slice(0, 8)}`;
+      let effectiveNodeId = nodeId || existingByNodeKey?.nodeId || null;
+
+      if (!effectiveNodeId && deviceKey && normalizedKnownNodeIds.length > 0) {
+        const oldestOfflineKnownNode = await NodeModel.findOne({
+          deviceKey,
+          status: 'offline',
+          nodeId: { $in: normalizedKnownNodeIds }
+        })
+          .sort({ createdAt: 1 })
+          .lean();
+
+        if (oldestOfflineKnownNode) {
+          effectiveNodeId = oldestOfflineKnownNode.nodeId;
+        }
+      }
+
+      if (!effectiveNodeId) {
+        effectiveNodeId = `donor-${uuidv4().slice(0, 8)}`;
+      }
 
       const node = await NodeModel.findOneAndUpdate(
         { nodeId: effectiveNodeId },
