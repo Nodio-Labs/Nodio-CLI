@@ -64,6 +64,26 @@ class LocalShardStore {
     }
   }
 
+  async deleteShard(shardId) {
+    const filePath = this.shardPath(shardId);
+
+    try {
+      await fs.unlink(filePath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+
+    const index = await this.readIndex();
+    if (index.shards[shardId]) {
+      delete index.shards[shardId];
+      await this.writeIndex(index);
+    }
+
+    return { shardId, deleted: true };
+  }
+
   async listShardIds() {
     const index = await this.readIndex();
     return Object.keys(index.shards);

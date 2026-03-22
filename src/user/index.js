@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const { Command } = require('commander');
-const { uploadFile, downloadFile } = require('./commands');
+const { uploadFile, downloadFile, deleteFile } = require('./commands');
 
 const program = new Command();
 
@@ -28,6 +28,15 @@ program
   .option('--output <path>', 'output file path')
   .action(async (options) => {
     await downloadFile(options);
+  });
+
+program
+  .command('delete')
+  .description('Delete a file and its shard replicas from the network')
+  .requiredOption('--file-id <id>', 'file ID to delete')
+  .option('--server <url>', 'central server URL', 'http://127.0.0.1:4000')
+  .action(async (options) => {
+    await deleteFile(options);
   });
 
 program.parseAsync(process.argv).catch((error) => {

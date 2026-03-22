@@ -65,6 +65,16 @@ class NodioNodeRuntime {
       }
     });
 
+    app.delete('/shards/:shardId', async (req, res) => {
+      try {
+        const { shardId } = req.params;
+        const result = await this.shardStore.deleteShard(shardId);
+        res.json({ ok: true, shard: result });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
     app.get('/health', (_req, res) => {
       res.json({ ok: true, nodeId: this.nodeId });
     });

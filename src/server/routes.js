@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const {
   NodeModel,
@@ -15,6 +16,10 @@ const {
 function parsePositiveInt(value, fallback) {
   const n = Number(value);
   return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+function normalizeUrl(url) {
+  return String(url || '').replace(/\/+$/, '');
 }
 
 function buildRoutes(config) {
@@ -314,6 +319,66 @@ function buildRoutes(config) {
       if (String(error.message).startsWith('insufficient_online_nodes')) {
         return res.status(409).json({ error: error.message });
       }
+      next(error);
+    }
+  });
+
+  router.delete('/files/:fileId', async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const file = await FileModel.findOne({ fileId }).lean();
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+
+      const shards = await ShardModel.find({ fileId }).select('shardId').lean();
+      const shardIds = shards.map((shard) => shard.shardId);
+
+      const placements = await ShardPlacementModel.find({ fileId }).lean();
+      const nodeIds = [...new Set(placements.map((placement) => placement.nodeId))];
+
+      const onlineNodes = await NodeModel.find({ nodeId: { $in: nodeIds }, status: 'online' })
+        .select('nodeId url')
+        .lean();
+      const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, node.url]));
+
+      const shardDeleteFailures = [];
+      for (const placement of placements) {
+        const nodeUrl = nodeUrlMap.get(placement.nodeId);
+        if (!nodeUrl) {
+          continue;
+        }
+
+        const deleteUrl = `${normalizeUrl(nodeUrl)}/shards/${placement.shardId}`;
+        try {
+          await axios.delete(deleteUrl, { timeout: 15000 });
+        } catch (error) {
+          shardDeleteFailures.push({
+            shardId: placement.shardId,
+            nodeId: placement.nodeId,
+            error: error.response?.data?.error || error.message
+          });
+        }
+      }
+
+      await ReplicationTaskModel.deleteMany({
+        $or: [
+          { fileId },
+          { shardId: { $in: shardIds } }
+        ]
+      });
+      await ShardPlacementModel.deleteMany({ fileId });
+      await ShardModel.deleteMany({ fileId });
+      await FileModel.deleteOne({ fileId });
+
+      res.json({
+        ok: true,
+        fileId,
+        deletedShards: shardIds.length,
+        deletedPlacements: placements.length,
+        shardDeleteFailures
+      });
+    } catch (error) {
       next(error);
     }
   });

@@ -199,7 +199,23 @@ async function downloadFile(options) {
   console.log(`sizeBytes: ${reconstructed.length}`);
 }
 
+async function deleteFile(options) {
+  const fileId = options.fileId;
+  const serverUrl = options.server;
+
+  const api = createApiClient(serverUrl);
+  const response = await api.delete(`/files/${fileId}`);
+  const payload = response.data || {};
+
+  console.log('Delete complete');
+  console.log(`fileId: ${payload.fileId || fileId}`);
+  console.log(`deletedShards: ${payload.deletedShards || 0}`);
+  console.log(`deletedPlacements: ${payload.deletedPlacements || 0}`);
+  console.log(`shardDeleteFailures: ${(payload.shardDeleteFailures || []).length}`);
+}
+
 module.exports = {
   uploadFile,
-  downloadFile
+  downloadFile,
+  deleteFile
 };
