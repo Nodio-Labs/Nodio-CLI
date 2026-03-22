@@ -84,29 +84,34 @@ function buildRoutes(config) {
       await node.save();
 
       if (Array.isArray(shardIds) && shardIds.length > 0) {
-        const normalizedShardIds = [...new Set(shardIds.filter(Boolean))];
-        const knownShards = await ShardModel.find({ shardId: { $in: normalizedShardIds } })
-          .select('shardId fileId')
-          .lean();
+        try {
+          const normalizedShardIds = [...new Set(shardIds.filter(Boolean))];
+          const knownShards = await ShardModel.find({ shardId: { $in: normalizedShardIds } })
+            .select('shardId fileId')
+            .lean();
 
-        for (const shard of knownShards) {
-          await ShardPlacementModel.updateOne(
-            { shardId: shard.shardId, nodeId },
-            {
-              $set: {
-                status: 'available',
-                fileId: shard.fileId,
-                updatedAt: new Date()
+          for (const shard of knownShards) {
+            if (!shard.fileId) {
+              continue;
+            }
+
+            await ShardPlacementModel.updateOne(
+              { shardId: shard.shardId, nodeId },
+              {
+                $set: {
+                  status: 'available',
+                  fileId: shard.fileId
+                },
+                $setOnInsert: {
+                  shardId: shard.shardId,
+                  nodeId
+                }
               },
-              $setOnInsert: {
-                shardId: shard.shardId,
-                nodeId,
-                fileId: shard.fileId,
-                createdAt: new Date()
-              }
-            },
-            { upsert: true }
-          );
+              { upsert: true }
+            );
+          }
+        } catch (syncError) {
+          console.warn('[heartbeat-sync]', nodeId, syncError.message);
         }
       }
 
