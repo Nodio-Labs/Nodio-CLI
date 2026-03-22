@@ -10,7 +10,7 @@ program
   .command('upload')
   .description('Encrypt, shard, and distribute a file across donor nodes')
   .requiredOption('--file <path>', 'path to local file')
-  .option('--server <url>', 'central server URL', 'http://127.0.0.1:4000')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .option('--file-id <id>', 'custom file ID (optional)')
   .option('--shard-size-mb <mb>', 'plaintext shard size in MB', '1')
   .option('--replicas <count>', 'replicas per shard (minimum 5)', '5')
@@ -24,7 +24,7 @@ program
   .description('Download, verify, decrypt, and reconstruct a file')
   .requiredOption('--file-id <id>', 'file ID to download')
   .requiredOption('--key-base64 <key>', '32-byte AES key in base64 from upload output')
-  .option('--server <url>', 'central server URL', 'http://127.0.0.1:4000')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .option('--output <path>', 'output file path')
   .action(async (options) => {
     await downloadFile(options);
@@ -34,7 +34,7 @@ program
   .command('delete')
   .description('Delete a file and its shard replicas from the network')
   .requiredOption('--file-id <id>', 'file ID to delete')
-  .option('--server <url>', 'central server URL', 'http://127.0.0.1:4000')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .action(async (options) => {
     await deleteFile(options);
   });

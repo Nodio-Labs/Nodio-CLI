@@ -5,6 +5,7 @@
   "main": "src/server/index.js",
   "type": "commonjs",
   "bin": {
+    "nodio-cli": "src/cli/index.js",
     "nodio-server": "src/server/index.js",
     "nodio-node": "src/node/index.js",
     "nodio": "src/user/index.js"
