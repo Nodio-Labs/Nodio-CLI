@@ -85,10 +85,17 @@ class NodioNodeRuntime {
       res.json({ ok: true, nodeId: this.nodeId });
     });
 
-    await new Promise((resolve) => {
-      app.listen(this.port, () => {
+    await new Promise((resolve, reject) => {
+      const server = app.listen({ port: this.port, exclusive: true }, () => {
         console.log(`Nodio node ${this.nodeId} listening on port ${this.port}`);
         resolve();
+      });
+
+      server.once('error', (error) => {
+        if (error && error.code === 'EADDRINUSE') {
+          return reject(new Error(`port ${this.port} is already in use`));
+        }
+        return reject(error);
       });
     });
   }
