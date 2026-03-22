@@ -63,18 +63,33 @@ function buildRoutes(config) {
       }
 
       let effectiveNodeId = nodeId || existingByNodeKey?.nodeId || null;
+      let claimedKnownNode = null;
 
       if (!effectiveNodeId && deviceKey && normalizedKnownNodeIds.length > 0) {
-        const oldestOfflineKnownNode = await NodeModel.findOne({
-          deviceKey,
-          status: 'offline',
-          nodeId: { $in: normalizedKnownNodeIds }
-        })
-          .sort({ createdAt: 1 })
-          .lean();
+        claimedKnownNode = await NodeModel.findOneAndUpdate(
+          {
+            deviceKey,
+            status: 'offline',
+            nodeId: { $in: normalizedKnownNodeIds }
+          },
+          {
+            $set: {
+              url,
+              capacityBytes: capacity,
+              freeBytes: free,
+              status: 'online',
+              lastHeartbeatAt: new Date(),
+              ...(nodeKey ? { nodeKey } : {})
+            }
+          },
+          {
+            new: true,
+            sort: { createdAt: 1 }
+          }
+        );
 
-        if (oldestOfflineKnownNode) {
-          effectiveNodeId = oldestOfflineKnownNode.nodeId;
+        if (claimedKnownNode) {
+          effectiveNodeId = claimedKnownNode.nodeId;
         }
       }
 
@@ -82,22 +97,23 @@ function buildRoutes(config) {
         effectiveNodeId = `donor-${uuidv4().slice(0, 8)}`;
       }
 
-      const node = await NodeModel.findOneAndUpdate(
-        { nodeId: effectiveNodeId },
-        {
-          $set: {
-            nodeId: effectiveNodeId,
-            ...(deviceKey ? { deviceKey } : {}),
-            ...(nodeKey ? { nodeKey } : {}),
-            url,
-            capacityBytes: capacity,
-            freeBytes: free,
-            status: 'online',
-            lastHeartbeatAt: new Date()
-          }
-        },
-        { upsert: true, new: true, setDefaultsOnInsert: true }
-      );
+      const node = claimedKnownNode
+        || await NodeModel.findOneAndUpdate(
+          { nodeId: effectiveNodeId },
+          {
+            $set: {
+              nodeId: effectiveNodeId,
+              ...(deviceKey ? { deviceKey } : {}),
+              ...(nodeKey ? { nodeKey } : {}),
+              url,
+              capacityBytes: capacity,
+              freeBytes: free,
+              status: 'online',
+              lastHeartbeatAt: new Date()
+            }
+          },
+          { upsert: true, new: true, setDefaultsOnInsert: true }
+        );
 
       res.json({
         nodeId: node.nodeId,
