@@ -77,10 +77,39 @@ replicationTaskSchema.index(
   }
 );
 
+const relayTaskSchema = new mongoose.Schema(
+  {
+    opId: { type: String, required: true, index: true },
+    taskType: {
+      type: String,
+      enum: ['store', 'fetch'],
+      required: true,
+      index: true
+    },
+    nodeId: { type: String, required: true, index: true },
+    shardId: { type: String, required: true, index: true },
+    fileId: { type: String, default: null, index: true },
+    dataBase64: { type: String, default: null },
+    resultDataBase64: { type: String, default: null },
+    status: {
+      type: String,
+      enum: ['pending', 'in_progress', 'completed', 'failed'],
+      default: 'pending',
+      index: true
+    },
+    errorMessage: { type: String, default: null },
+    attempts: { type: Number, default: 0 }
+  },
+  { timestamps: true }
+);
+
+relayTaskSchema.index({ opId: 1, nodeId: 1, taskType: 1 });
+
 module.exports = {
   NodeModel: mongoose.model('Node', nodeSchema),
   FileModel: mongoose.model('File', fileSchema),
   ShardModel: mongoose.model('Shard', shardSchema),
   ShardPlacementModel: mongoose.model('ShardPlacement', shardPlacementSchema),
-  ReplicationTaskModel: mongoose.model('ReplicationTask', replicationTaskSchema)
+  ReplicationTaskModel: mongoose.model('ReplicationTask', replicationTaskSchema),
+  RelayTaskModel: mongoose.model('RelayTask', relayTaskSchema)
 };

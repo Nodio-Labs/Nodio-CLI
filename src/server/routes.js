@@ -6,7 +6,8 @@ const {
   FileModel,
   ShardModel,
   ShardPlacementModel,
-  ReplicationTaskModel
+  ReplicationTaskModel,
+  RelayTaskModel
 } = require('./models');
 const {
   chooseDistinctOnlineNodes,
@@ -236,10 +237,34 @@ function buildRoutes(config) {
         });
       }
 
+      const pendingRelayTasks = await RelayTaskModel.find({
+        nodeId,
+        status: 'pending'
+      })
+        .sort({ createdAt: 1 })
+        .limit(10)
+        .lean();
+
+      if (pendingRelayTasks.length > 0) {
+        await RelayTaskModel.updateMany(
+          { _id: { $in: pendingRelayTasks.map((task) => task._id) } },
+          { $set: { status: 'in_progress' }, $inc: { attempts: 1 } }
+        );
+      }
+
+      const relayTasks = pendingRelayTasks.map((task) => ({
+        taskId: task._id.toString(),
+        taskType: task.taskType,
+        shardId: task.shardId,
+        fileId: task.fileId,
+        dataBase64: task.dataBase64
+      }));
+
       res.json({
         ok: true,
         now: new Date().toISOString(),
-        replicationTasks: tasksWithSourceUrl
+        replicationTasks: tasksWithSourceUrl,
+        relayTasks
       });
     } catch (error) {
       next(error);
@@ -288,6 +313,146 @@ function buildRoutes(config) {
       }
 
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/relay-tasks/:taskId/complete', async (req, res, next) => {
+    try {
+      const { taskId } = req.params;
+      const { nodeId, success, errorMessage, resultDataBase64 } = req.body;
+
+      const task = await RelayTaskModel.findById(taskId);
+      if (!task) {
+        return res.status(404).json({ error: 'relay task not found' });
+      }
+
+      if (task.nodeId !== nodeId) {
+        return res.status(403).json({ error: 'nodeId does not match relay task target' });
+      }
+
+      if (success) {
+        task.status = 'completed';
+        task.errorMessage = null;
+        task.resultDataBase64 = typeof resultDataBase64 === 'string' ? resultDataBase64 : null;
+      } else {
+        task.status = 'failed';
+        task.errorMessage = errorMessage || 'relay task failed';
+      }
+
+      await task.save();
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/relay/shards/store', async (req, res, next) => {
+    try {
+      const { opId, shardId, fileId, nodeIds, dataBase64 } = req.body;
+      if (!shardId || !Array.isArray(nodeIds) || nodeIds.length === 0 || typeof dataBase64 !== 'string') {
+        return res.status(400).json({ error: 'shardId, nodeIds and dataBase64 are required' });
+      }
+
+      const normalizedNodeIds = [...new Set(nodeIds.filter((value) => typeof value === 'string' && value.length > 0))];
+      if (normalizedNodeIds.length === 0) {
+        return res.status(400).json({ error: 'nodeIds must contain at least one valid nodeId' });
+      }
+
+      const operationId = opId || uuidv4();
+      const docs = normalizedNodeIds.map((nodeId) => ({
+        opId: operationId,
+        taskType: 'store',
+        nodeId,
+        shardId,
+        fileId: fileId || null,
+        dataBase64,
+        status: 'pending'
+      }));
+
+      await RelayTaskModel.insertMany(docs);
+      res.json({ ok: true, opId: operationId, queued: docs.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/relay/shards/store/:opId', async (req, res, next) => {
+    try {
+      const { opId } = req.params;
+      const tasks = await RelayTaskModel.find({ opId, taskType: 'store' }).lean();
+      if (tasks.length === 0) {
+        return res.status(404).json({ error: 'relay store operation not found' });
+      }
+
+      const successfulNodeIds = tasks.filter((task) => task.status === 'completed').map((task) => task.nodeId);
+      const failed = tasks
+        .filter((task) => task.status === 'failed')
+        .map((task) => ({ nodeId: task.nodeId, errorMessage: task.errorMessage || 'failed' }));
+
+      res.json({
+        ok: true,
+        opId,
+        pendingCount: tasks.filter((task) => task.status === 'pending' || task.status === 'in_progress').length,
+        successfulNodeIds,
+        failed
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/relay/shards/fetch', async (req, res, next) => {
+    try {
+      const { opId, shardId, nodeIds } = req.body;
+      if (!shardId || !Array.isArray(nodeIds) || nodeIds.length === 0) {
+        return res.status(400).json({ error: 'shardId and nodeIds are required' });
+      }
+
+      const normalizedNodeIds = [...new Set(nodeIds.filter((value) => typeof value === 'string' && value.length > 0))];
+      if (normalizedNodeIds.length === 0) {
+        return res.status(400).json({ error: 'nodeIds must contain at least one valid nodeId' });
+      }
+
+      const operationId = opId || uuidv4();
+      const docs = normalizedNodeIds.map((nodeId) => ({
+        opId: operationId,
+        taskType: 'fetch',
+        nodeId,
+        shardId,
+        status: 'pending'
+      }));
+
+      await RelayTaskModel.insertMany(docs);
+      res.json({ ok: true, opId: operationId, queued: docs.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/relay/shards/fetch/:opId', async (req, res, next) => {
+    try {
+      const { opId } = req.params;
+      const tasks = await RelayTaskModel.find({ opId, taskType: 'fetch' }).lean();
+      if (tasks.length === 0) {
+        return res.status(404).json({ error: 'relay fetch operation not found' });
+      }
+
+      const completed = tasks.find((task) => task.status === 'completed' && task.resultDataBase64);
+      const failed = tasks
+        .filter((task) => task.status === 'failed')
+        .map((task) => ({ nodeId: task.nodeId, errorMessage: task.errorMessage || 'failed' }));
+
+      res.json({
+        ok: true,
+        opId,
+        pendingCount: tasks.filter((task) => task.status === 'pending' || task.status === 'in_progress').length,
+        hasResult: Boolean(completed),
+        nodeId: completed?.nodeId || null,
+        resultDataBase64: completed?.resultDataBase64 || null,
+        failed
+      });
     } catch (error) {
       next(error);
     }
@@ -441,6 +606,12 @@ function buildRoutes(config) {
       }
 
       await ReplicationTaskModel.deleteMany({
+        $or: [
+          { fileId },
+          { shardId: { $in: shardIds } }
+        ]
+      });
+      await RelayTaskModel.deleteMany({
         $or: [
           { fileId },
           { shardId: { $in: shardIds } }

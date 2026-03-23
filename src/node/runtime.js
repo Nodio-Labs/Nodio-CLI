@@ -146,8 +146,13 @@ class NodioNodeRuntime {
       await this.executeReplicationTask(task);
     }
 
+    const relayTasks = response.data.relayTasks || [];
+    for (const task of relayTasks) {
+      await this.executeRelayTask(task);
+    }
+
     console.log(
-      `[heartbeat] ${new Date().toISOString()} | shards=${shardIds.length} | tasks=${tasks.length}`
+      `[heartbeat] ${new Date().toISOString()} | shards=${shardIds.length} | tasks=${tasks.length} | relayTasks=${relayTasks.length}`
     );
   }
 
@@ -178,6 +183,56 @@ class NodioNodeRuntime {
         .catch(() => null);
 
       console.error(`[replication] failed task=${task.taskId} shard=${task.shardId}: ${message}`);
+    }
+  }
+
+  async executeRelayTask(task) {
+    try {
+      if (task.taskType === 'store') {
+        if (typeof task.dataBase64 !== 'string') {
+          throw new Error('relay store payload is missing dataBase64');
+        }
+
+        const payload = Buffer.from(task.dataBase64, 'base64');
+        await this.shardStore.saveShard(task.shardId, payload);
+
+        await axios.post(`${this.serverUrl}/api/relay-tasks/${task.taskId}/complete`, {
+          nodeId: this.nodeId,
+          success: true
+        });
+
+        console.log(`[relay] stored shard=${task.shardId} task=${task.taskId}`);
+        return;
+      }
+
+      if (task.taskType === 'fetch') {
+        if (!(await this.shardStore.hasShard(task.shardId))) {
+          throw new Error('shard not found on donor');
+        }
+
+        const payload = await this.shardStore.readShard(task.shardId);
+        await axios.post(`${this.serverUrl}/api/relay-tasks/${task.taskId}/complete`, {
+          nodeId: this.nodeId,
+          success: true,
+          resultDataBase64: payload.toString('base64')
+        });
+
+        console.log(`[relay] fetched shard=${task.shardId} task=${task.taskId}`);
+        return;
+      }
+
+      throw new Error(`unsupported relay task type: ${task.taskType}`);
+    } catch (error) {
+      const message = error.response?.data?.error || error.message;
+      await axios
+        .post(`${this.serverUrl}/api/relay-tasks/${task.taskId}/complete`, {
+          nodeId: this.nodeId,
+          success: false,
+          errorMessage: message
+        })
+        .catch(() => null);
+
+      console.error(`[relay] failed task=${task.taskId} shard=${task.shardId}: ${message}`);
     }
   }
 }

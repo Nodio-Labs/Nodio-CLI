@@ -27,6 +27,74 @@ function parseAesKey(keyBase64) {
   return key;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, timeoutMs = 120000, pollMs = 1500 }) {
+  const opId = uuidv4();
+  await api.post('/relay/shards/store', {
+    opId,
+    shardId,
+    fileId,
+    nodeIds,
+    dataBase64: dataBuffer.toString('base64')
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const response = await api.get(`/relay/shards/store/${opId}`);
+    const payload = response.data || {};
+    if (Number(payload.pendingCount || 0) === 0) {
+      return {
+        successfulNodeIds: payload.successfulNodeIds || [],
+        failed: payload.failed || []
+      };
+    }
+    // Wait for donor heartbeats to pull relay tasks.
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(pollMs);
+  }
+
+  throw new Error(`relay store timed out for shard ${shardId}`);
+}
+
+async function relayFetchShard(api, { shardId, nodeIds, timeoutMs = 120000, pollMs = 1500 }) {
+  const opId = uuidv4();
+  await api.post('/relay/shards/fetch', {
+    opId,
+    shardId,
+    nodeIds
+  });
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const response = await api.get(`/relay/shards/fetch/${opId}`);
+    const payload = response.data || {};
+    if (payload.hasResult && payload.resultDataBase64) {
+      return {
+        nodeId: payload.nodeId,
+        data: Buffer.from(payload.resultDataBase64, 'base64'),
+        failed: payload.failed || []
+      };
+    }
+
+    if (Number(payload.pendingCount || 0) === 0) {
+      return {
+        nodeId: null,
+        data: null,
+        failed: payload.failed || []
+      };
+    }
+
+    // Wait for donor heartbeats to pull relay tasks.
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(pollMs);
+  }
+
+  throw new Error(`relay fetch timed out for shard ${shardId}`);
+}
+
 async function uploadFile(options) {
   const filePath = path.resolve(options.file);
   const serverUrl = options.server;
@@ -101,12 +169,28 @@ async function uploadFile(options) {
       }
     }
 
+    if (failedReplicas.length > 0) {
+      try {
+        const relayResult = await relayStoreShard(api, {
+          shardId,
+          fileId,
+          nodeIds: failedReplicas.map((replica) => replica.nodeId),
+          dataBuffer: encrypted.cipherText
+        });
+
+        const promotedRelayReplicas = plannedReplicas.filter((replica) => relayResult.successfulNodeIds.includes(replica.nodeId));
+        successfulReplicas.push(...promotedRelayReplicas.filter((replica) => !successfulReplicas.some((item) => item.nodeId === replica.nodeId)));
+      } catch (relayError) {
+        console.warn(`[upload] relay store failed for shard ${shardId}: ${relayError.message}`);
+      }
+    }
+
     if (successfulReplicas.length === 0) {
       throw new Error(`failed to write shard ${shardId} to any replica: ${failedReplicas.map((r) => `${r.url} (${r.error})`).join(', ')}`);
     }
 
     if (failedReplicas.length > 0) {
-      console.warn(`[upload] shard ${shardId} failed on ${failedReplicas.length} replica(s), but succeeded on ${successfulReplicas.length}`);
+      console.warn(`[upload] shard ${shardId} failed on ${failedReplicas.length} direct replica(s), final successes=${successfulReplicas.length}`);
     }
 
     await api.post('/shards/register', {
@@ -194,6 +278,21 @@ async function downloadFile(options) {
         break;
       } catch {
         continue;
+      }
+    }
+
+    if (!encryptedBuffer && Array.isArray(shard.replicas) && shard.replicas.length > 0) {
+      try {
+        const relayResult = await relayFetchShard(api, {
+          shardId: shard.shardId,
+          nodeIds: shard.replicas.map((replica) => replica.nodeId)
+        });
+
+        if (relayResult.data && sha256Hex(relayResult.data) === shard.checksum) {
+          encryptedBuffer = relayResult.data;
+        }
+      } catch (relayError) {
+        console.warn(`[download] relay fetch failed for shard ${shard.shardId}: ${relayError.message}`);
       }
     }
 
