@@ -85,12 +85,28 @@ async function uploadFile(options) {
       throw new Error(`placement failed for ${shardId}: expected ${replicas} replicas`);
     }
 
+    const successfulReplicas = [];
+    const failedReplicas = [];
+
     for (const replica of plannedReplicas) {
-      const putUrl = `${normalizeUrl(replica.url)}/shards/${shardId}`;
-      await axios.put(putUrl, encrypted.cipherText, {
-        headers: { 'Content-Type': 'application/octet-stream' },
-        timeout: 30000
-      });
+      try {
+        const putUrl = `${normalizeUrl(replica.url)}/shards/${shardId}`;
+        await axios.put(putUrl, encrypted.cipherText, {
+          headers: { 'Content-Type': 'application/octet-stream' },
+          timeout: 30000
+        });
+        successfulReplicas.push(replica);
+      } catch (error) {
+        failedReplicas.push({ nodeId: replica.nodeId, url: replica.url, error: error.message });
+      }
+    }
+
+    if (successfulReplicas.length === 0) {
+      throw new Error(`failed to write shard ${shardId} to any replica: ${failedReplicas.map((r) => `${r.url} (${r.error})`).join(', ')}`);
+    }
+
+    if (failedReplicas.length > 0) {
+      console.warn(`[upload] shard ${shardId} failed on ${failedReplicas.length} replica(s), but succeeded on ${successfulReplicas.length}`);
     }
 
     await api.post('/shards/register', {
@@ -99,7 +115,7 @@ async function uploadFile(options) {
       order,
       sizeBytes: encrypted.cipherText.length,
       checksum,
-      nodeIds: plannedReplicas.map((replica) => replica.nodeId)
+      nodeIds: successfulReplicas.map((replica) => replica.nodeId)
     });
 
     encryptionShardMeta.push({
