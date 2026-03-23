@@ -1,6 +1,6 @@
 {
   "name": "nodio-cli",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Nodio distributed storage network",
   "main": "src/server/index.js",
   "type": "commonjs",
