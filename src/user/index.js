@@ -14,6 +14,7 @@ program
   .option('--file-id <id>', 'custom file ID (optional)')
   .option('--shard-size-mb <mb>', 'plaintext shard size in MB', '1')
   .option('--replicas <count>', 'replicas per shard (minimum 5)', '5')
+  .option('--direct-timeout-ms <ms>', 'timeout for each direct donor attempt before relay fallback', '4000')
   .option('--key-base64 <key>', '32-byte AES key in base64 (optional)')
   .action(async (options) => {
     await uploadFile(options);
@@ -26,6 +27,7 @@ program
   .requiredOption('--key-base64 <key>', '32-byte AES key in base64 from upload output')
   .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .option('--output <path>', 'output file path')
+  .option('--direct-timeout-ms <ms>', 'timeout for each direct donor attempt before relay fallback', '4000')
   .action(async (options) => {
     await downloadFile(options);
   });

@@ -120,12 +120,16 @@ async function uploadFile(options) {
   const serverUrl = options.server;
   const shardSizeMb = Number(options.shardSizeMb || 1);
   const replicas = Number(options.replicas || 5);
+  const directTimeoutMs = Number(options.directTimeoutMs || 4000);
 
   if (!Number.isFinite(shardSizeMb) || shardSizeMb <= 0) {
     throw new Error('shard-size-mb must be greater than 0');
   }
   if (!Number.isInteger(replicas) || replicas < 5) {
     throw new Error('replicas must be an integer >= 5');
+  }
+  if (!Number.isFinite(directTimeoutMs) || directTimeoutMs <= 0) {
+    throw new Error('direct-timeout-ms must be greater than 0');
   }
 
   const shardSizeBytes = Math.floor(shardSizeMb * 1024 * 1024);
@@ -173,21 +177,29 @@ async function uploadFile(options) {
       throw new Error(`placement failed for ${shardId}: expected ${replicas} replicas`);
     }
 
-    const successfulReplicas = [];
-    const failedReplicas = [];
-
-    for (const replica of plannedReplicas) {
-      try {
+    const directWriteResults = await Promise.allSettled(
+      plannedReplicas.map(async (replica) => {
         const putUrl = `${normalizeUrl(replica.url)}/shards/${shardId}`;
         await axios.put(putUrl, encrypted.cipherText, {
           headers: { 'Content-Type': 'application/octet-stream' },
-          timeout: 30000
+          timeout: directTimeoutMs
         });
-        successfulReplicas.push(replica);
-      } catch (error) {
-        failedReplicas.push({ nodeId: replica.nodeId, url: replica.url, error: error.message });
-      }
-    }
+        return replica;
+      })
+    );
+
+    const successfulReplicas = directWriteResults
+      .filter((result) => result.status === 'fulfilled')
+      .map((result) => result.value);
+
+    const failedReplicas = directWriteResults
+      .map((result, index) => ({ result, replica: plannedReplicas[index] }))
+      .filter((entry) => entry.result.status === 'rejected')
+      .map((entry) => ({
+        nodeId: entry.replica.nodeId,
+        url: entry.replica.url,
+        error: entry.result.reason?.message || 'direct write failed'
+      }));
 
     if (failedReplicas.length > 0) {
       try {
@@ -260,6 +272,11 @@ async function downloadFile(options) {
   const serverUrl = options.server;
   const output = options.output ? path.resolve(options.output) : path.resolve(`./${fileId}.downloaded`);
   const keyBuffer = parseAesKey(options.keyBase64);
+  const directTimeoutMs = Number(options.directTimeoutMs || 4000);
+
+  if (!Number.isFinite(directTimeoutMs) || directTimeoutMs <= 0) {
+    throw new Error('direct-timeout-ms must be greater than 0');
+  }
 
   const api = createApiClient(serverUrl);
   const manifestResponse = await api.get(`/files/${fileId}/manifest`);
@@ -283,22 +300,24 @@ async function downloadFile(options) {
     }
 
     let encryptedBuffer = null;
-    for (const replica of shard.replicas || []) {
-      try {
+    const directFetchResults = await Promise.allSettled(
+      (shard.replicas || []).map(async (replica) => {
         const getUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
         const response = await axios.get(getUrl, {
           responseType: 'arraybuffer',
-          timeout: 30000
+          timeout: directTimeoutMs
         });
         const candidate = Buffer.from(response.data);
         if (sha256Hex(candidate) !== shard.checksum) {
-          continue;
+          throw new Error('checksum mismatch');
         }
-        encryptedBuffer = candidate;
-        break;
-      } catch {
-        continue;
-      }
+        return candidate;
+      })
+    );
+
+    const successfulDirectFetch = directFetchResults.find((result) => result.status === 'fulfilled');
+    if (successfulDirectFetch) {
+      encryptedBuffer = successfulDirectFetch.value;
     }
 
     if (!encryptedBuffer && Array.isArray(shard.replicas) && shard.replicas.length > 0) {
