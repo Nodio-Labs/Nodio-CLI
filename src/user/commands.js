@@ -31,7 +31,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, timeoutMs = 120000, pollMs = 1500 }) {
+async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, timeoutMs = 90000, pollMs = 500 }) {
   const opId = uuidv4();
   await api.post('/relay/shards/store', {
     opId,
@@ -40,6 +40,16 @@ async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, time
     nodeIds,
     dataBase64: dataBuffer.toString('base64')
   });
+
+  // Alert server that relay tasks are pending so donors check urgently
+  try {
+    for (const nodeId of nodeIds) {
+      // eslint-disable-next-line no-await-in-loop
+      await api.post(`/nodes/${nodeId}/alert-relay-pending`);
+    }
+  } catch (alertError) {
+    console.warn('relay alert failed:', alertError.message);
+  }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -51,7 +61,7 @@ async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, time
         failed: payload.failed || []
       };
     }
-    // Wait for donor heartbeats to pull relay tasks.
+    // Polls every 500ms; with 10s heartbeat, donor should respond within 10s+network latency
     // eslint-disable-next-line no-await-in-loop
     await sleep(pollMs);
   }
@@ -59,13 +69,23 @@ async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, time
   throw new Error(`relay store timed out for shard ${shardId}`);
 }
 
-async function relayFetchShard(api, { shardId, nodeIds, timeoutMs = 120000, pollMs = 1500 }) {
+async function relayFetchShard(api, { shardId, nodeIds, timeoutMs = 90000, pollMs = 500 }) {
   const opId = uuidv4();
   await api.post('/relay/shards/fetch', {
     opId,
     shardId,
     nodeIds
   });
+
+  // Alert server that relay tasks are pending so donors check urgently
+  try {
+    for (const nodeId of nodeIds) {
+      // eslint-disable-next-line no-await-in-loop
+      await api.post(`/nodes/${nodeId}/alert-relay-pending`);
+    }
+  } catch (alertError) {
+    console.warn('relay alert failed:', alertError.message);
+  }
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

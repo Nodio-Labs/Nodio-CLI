@@ -271,6 +271,23 @@ function buildRoutes(config) {
     }
   });
 
+  router.post('/nodes/:nodeId/alert-relay-pending', async (req, res, next) => {
+    try {
+      const { nodeId } = req.params;
+      const node = await NodeModel.findOne({ nodeId });
+      if (!node) {
+        return res.status(404).json({ error: 'node not found' });
+      }
+      // Set pending relay flag so donor knows to check urgently
+      node.pendingRelayAlert = true;
+      node.pendingRelayAlertAt = new Date();
+      await node.save();
+      res.json({ ok: true, message: 'relay pending alert sent' });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/replication-tasks/:taskId/complete', async (req, res, next) => {
     try {
       const { taskId } = req.params;

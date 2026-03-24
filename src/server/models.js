@@ -9,7 +9,9 @@ const nodeSchema = new mongoose.Schema(
     capacityBytes: { type: Number, required: true, min: 1 },
     freeBytes: { type: Number, required: true, min: 0 },
     status: { type: String, enum: ['online', 'offline'], default: 'online', index: true },
-    lastHeartbeatAt: { type: Date, default: Date.now, index: true }
+    lastHeartbeatAt: { type: Date, default: Date.now, index: true },
+    pendingRelayAlert: { type: Boolean, default: false },
+    pendingRelayAlertAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
