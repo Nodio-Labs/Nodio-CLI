@@ -263,11 +263,13 @@ function buildRoutes(config) {
         });
       }
 
+      const relayTasks = await claimPendingRelayTasks(nodeId, 10);
+
       res.json({
         ok: true,
         now: new Date().toISOString(),
         replicationTasks: tasksWithSourceUrl,
-        relayTasks: []
+        relayTasks
       });
     } catch (error) {
       next(error);

@@ -44,6 +44,11 @@ program
   });
 
 program.parseAsync(process.argv).catch((error) => {
-  console.error('[nodio]', error.message);
+  const apiErrorMessage = error.response?.data?.error;
+  if (apiErrorMessage) {
+    console.error('[nodio]', apiErrorMessage);
+  } else {
+    console.error('[nodio]', error.message);
+  }
   process.exit(1);
 });

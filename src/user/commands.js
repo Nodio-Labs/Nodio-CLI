@@ -112,8 +112,8 @@ async function uploadFile(options) {
   if (!Number.isFinite(shardSizeMb) || shardSizeMb <= 0) {
     throw new Error('shard-size-mb must be greater than 0');
   }
-  if (!Number.isInteger(replicas) || replicas < 5) {
-    throw new Error('replicas must be an integer >= 5');
+  if (!Number.isInteger(replicas) || replicas < 1) {
+    throw new Error('replicas must be an integer >= 1');
   }
   if (!Number.isFinite(directTimeoutMs) || directTimeoutMs <= 0) {
     throw new Error('direct-timeout-ms must be greater than 0');
