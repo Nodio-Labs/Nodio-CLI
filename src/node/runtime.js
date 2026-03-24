@@ -15,8 +15,11 @@ class NodioNodeRuntime {
     this.port = Number(options.port);
     this.capacityBytes = Number(options.capacityBytes);
     this.heartbeatIntervalMs = Number(options.heartbeatIntervalMs || 30000);
+    this.relayPollIntervalMs = Number(options.relayPollIntervalMs || 1000);
     this.shardStore = new LocalShardStore(options.storageDir);
     this.heartbeatTimer = null;
+    this.relayPollTimer = null;
+    this.relayPullInFlight = false;
   }
 
   async start() {
@@ -37,6 +40,14 @@ class NodioNodeRuntime {
         console.error('[heartbeat]', error.message);
       }
     }, this.heartbeatIntervalMs);
+
+    this.relayPollTimer = setInterval(async () => {
+      try {
+        await this.pollRelayTasks();
+      } catch (error) {
+        console.error('[relay-pull]', error.message);
+      }
+    }, this.relayPollIntervalMs);
   }
 
   async startShardServer() {
@@ -128,6 +139,11 @@ class NodioNodeRuntime {
       this.heartbeatIntervalMs = interval;
     }
 
+    const relayInterval = Number(response.data.relayPollIntervalMs);
+    if (Number.isFinite(relayInterval) && relayInterval > 0) {
+      this.relayPollIntervalMs = relayInterval;
+    }
+
     console.log(
       `Registered node ${this.nodeId} | min replicas: ${response.data.minReplicas} | emergency floor: ${response.data.emergencyReplicaFloor}`
     );
@@ -146,14 +162,34 @@ class NodioNodeRuntime {
       await this.executeReplicationTask(task);
     }
 
-    const relayTasks = response.data.relayTasks || [];
-    for (const task of relayTasks) {
-      await this.executeRelayTask(task);
+    console.log(
+      `[heartbeat] ${new Date().toISOString()} | shards=${shardIds.length} | tasks=${tasks.length}`
+    );
+  }
+
+  async pollRelayTasks() {
+    if (this.relayPullInFlight) {
+      return;
     }
 
-    console.log(
-      `[heartbeat] ${new Date().toISOString()} | shards=${shardIds.length} | tasks=${tasks.length} | relayTasks=${relayTasks.length}`
-    );
+    this.relayPullInFlight = true;
+    try {
+      const response = await axios.post(`${this.serverUrl}/api/nodes/relay-pull`, {
+        nodeId: this.nodeId
+      });
+
+      const relayTasks = response.data.relayTasks || [];
+      for (const task of relayTasks) {
+        // eslint-disable-next-line no-await-in-loop
+        await this.executeRelayTask(task);
+      }
+
+      if (relayTasks.length > 0) {
+        console.log(`[relay-pull] ${new Date().toISOString()} | relayTasks=${relayTasks.length}`);
+      }
+    } finally {
+      this.relayPullInFlight = false;
+    }
   }
 
   async executeReplicationTask(task) {

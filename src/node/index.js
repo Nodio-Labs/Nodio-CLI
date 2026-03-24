@@ -80,7 +80,8 @@ program
   .option('--capacity-gb <gb>', 'donated capacity in GB', '10')
   .option('--auto-port-start <port>', 'start of auto-port range', '5001')
   .option('--auto-port-end <port>', 'end of auto-port range', '5999')
-  .option('--heartbeat-ms <ms>', 'heartbeat interval in milliseconds', '30000');
+  .option('--heartbeat-ms <ms>', 'heartbeat interval in milliseconds', '30000')
+  .option('--relay-poll-ms <ms>', 'relay task poll interval in milliseconds', '1000');
 
 program.action(async (capacityArg, options) => {
   const autoPortStart = Number(options.autoPortStart);
@@ -92,6 +93,7 @@ program.action(async (capacityArg, options) => {
   const parsedCapacityArg = parseCapacityGb(capacityArg);
   const capacityGb = parsedCapacityArg ?? Number(options.capacityGb);
   const heartbeatMs = Number(options.heartbeatMs);
+  const relayPollMs = Number(options.relayPollMs);
   const advertisedHost = options.host === 'auto' ? detectAdvertisedHost() : options.host;
   const storageDir = options.storageDir
     ? path.resolve(options.storageDir)
@@ -109,6 +111,9 @@ program.action(async (capacityArg, options) => {
   if (!Number.isFinite(heartbeatMs) || heartbeatMs <= 0) {
     throw new Error('heartbeat-ms must be greater than 0');
   }
+  if (!Number.isFinite(relayPollMs) || relayPollMs <= 0) {
+    throw new Error('relay-poll-ms must be greater than 0');
+  }
 
   if (isLoopbackHost(advertisedHost)) {
     console.warn('[nodio-node] warning: loopback host is advertised; only this machine can reach this donor');
@@ -121,7 +126,8 @@ program.action(async (capacityArg, options) => {
     port,
     storageDir,
     capacityBytes: Math.floor(capacityGb * 1024 * 1024 * 1024),
-    heartbeatIntervalMs: heartbeatMs
+    heartbeatIntervalMs: heartbeatMs,
+    relayPollIntervalMs: relayPollMs
   });
 
   await runtime.start();

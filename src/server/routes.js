@@ -23,6 +23,31 @@ function normalizeUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
+async function claimPendingRelayTasks(nodeId, limit = 10) {
+  const pendingRelayTasks = await RelayTaskModel.find({
+    nodeId,
+    status: 'pending'
+  })
+    .sort({ createdAt: 1 })
+    .limit(limit)
+    .lean();
+
+  if (pendingRelayTasks.length > 0) {
+    await RelayTaskModel.updateMany(
+      { _id: { $in: pendingRelayTasks.map((task) => task._id) } },
+      { $set: { status: 'in_progress' }, $inc: { attempts: 1 } }
+    );
+  }
+
+  return pendingRelayTasks.map((task) => ({
+    taskId: task._id.toString(),
+    taskType: task.taskType,
+    shardId: task.shardId,
+    fileId: task.fileId,
+    dataBase64: task.dataBase64
+  }));
+}
+
 function buildRoutes(config) {
   const router = express.Router();
 
@@ -135,6 +160,7 @@ function buildRoutes(config) {
         nodeId: node.nodeId,
         status: node.status,
         heartbeatIntervalMs: config.heartbeatIntervalMs,
+        relayPollIntervalMs: config.relayPollIntervalMs,
         minReplicas: config.minReplicas,
         emergencyReplicaFloor: config.emergencyReplicaFloor
       });
@@ -237,33 +263,40 @@ function buildRoutes(config) {
         });
       }
 
-      const pendingRelayTasks = await RelayTaskModel.find({
-        nodeId,
-        status: 'pending'
-      })
-        .sort({ createdAt: 1 })
-        .limit(10)
-        .lean();
-
-      if (pendingRelayTasks.length > 0) {
-        await RelayTaskModel.updateMany(
-          { _id: { $in: pendingRelayTasks.map((task) => task._id) } },
-          { $set: { status: 'in_progress' }, $inc: { attempts: 1 } }
-        );
-      }
-
-      const relayTasks = pendingRelayTasks.map((task) => ({
-        taskId: task._id.toString(),
-        taskType: task.taskType,
-        shardId: task.shardId,
-        fileId: task.fileId,
-        dataBase64: task.dataBase64
-      }));
-
       res.json({
         ok: true,
         now: new Date().toISOString(),
         replicationTasks: tasksWithSourceUrl,
+        relayTasks: []
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/nodes/relay-pull', async (req, res, next) => {
+    try {
+      const { nodeId } = req.body;
+      if (!nodeId) {
+        return res.status(400).json({ error: 'nodeId is required' });
+      }
+
+      const node = await NodeModel.findOne({ nodeId });
+      if (!node) {
+        return res.status(404).json({ error: 'node not found' });
+      }
+
+      const relayTasks = await claimPendingRelayTasks(nodeId, 10);
+
+      if (relayTasks.length > 0 && node.pendingRelayAlert) {
+        node.pendingRelayAlert = false;
+        node.pendingRelayAlertAt = null;
+        await node.save();
+      }
+
+      res.json({
+        ok: true,
+        now: new Date().toISOString(),
         relayTasks
       });
     } catch (error) {
