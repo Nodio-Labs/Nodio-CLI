@@ -340,8 +340,17 @@ async function downloadFile(options) {
       throw new Error(`failed to fetch valid replica for shard ${shard.shardId}`);
     }
 
-    const plain = decryptAes256Gcm(encryptedBuffer, keyBuffer, shardMeta.iv, shardMeta.authTag);
-    plainParts.push(plain);
+    try {
+      const plain = decryptAes256Gcm(encryptedBuffer, keyBuffer, shardMeta.iv, shardMeta.authTag);
+      plainParts.push(plain);
+    } catch (error) {
+      if (String(error.message || '').includes('unsupported state or unable to authenticate data')) {
+        throw new Error(
+          `decryption failed for shard ${shard.shardId}: key is incorrect or metadata/key mismatch (double-check key-base64 copy)`
+        );
+      }
+      throw error;
+    }
   }
 
   const reconstructed = Buffer.concat(plainParts);
