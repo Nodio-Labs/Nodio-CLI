@@ -122,6 +122,5 @@ npm run start:cli -- download \
 - `POST /api/shards/placement-plan`
 - `GET /api/files/:fileId/manifest`
 
-## Next Step
-
-Add authentication between user CLI, central server, and donor nodes for production security.
+## Next Step( )
+Integrating with nodio-drive.
