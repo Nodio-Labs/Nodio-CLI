@@ -94,9 +94,15 @@ async function requestFilecoinBackup(api, fileBuffer, fileId) {
   }
 
   try {
-    await api.post(`/files/${fileId}/filecoin/upload`, {
-      dataBase64: fileBuffer.toString('base64')
-    });
+    await api.post(
+      `/files/${fileId}/filecoin/upload`,
+      {
+        dataBase64: fileBuffer.toString('base64')
+      },
+      {
+        timeout: 180000
+      }
+    );
   } catch (error) {
     const message = error.response?.data?.error || error.message;
     console.warn(`[filecoin] server upload failed for ${fileId}: ${message}`);
