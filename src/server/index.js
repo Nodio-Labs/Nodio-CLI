@@ -6,6 +6,7 @@ const { getServerConfig } = require('./config');
 const { buildRoutes } = require('./routes');
 const { NodeModel } = require('./models');
 const { markNodeOfflineAndRecover } = require('./services');
+const { getWalletBalance } = require('../../services/filecoin');
 
 async function startServer() {
   const config = getServerConfig();
@@ -72,6 +73,26 @@ async function startServer() {
   app.listen(config.port, () => {
     console.log(`Nodio central server listening on port ${config.port}`);
   });
+
+  const dailyMs = 24 * 60 * 60 * 1000;
+  const checkBalance = async () => {
+    const balance = await getWalletBalance();
+    if (balance !== null && balance < 2) {
+      console.warn(`[filecoin] USDFC balance low: ${balance}`);
+    }
+  };
+
+  setTimeout(() => {
+    checkBalance().catch((error) => {
+      console.error('[filecoin] balance check failed', error.message);
+    });
+  }, 5000);
+
+  setInterval(() => {
+    checkBalance().catch((error) => {
+      console.error('[filecoin] balance check failed', error.message);
+    });
+  }, dailyMs);
 }
 
 startServer().catch((error) => {

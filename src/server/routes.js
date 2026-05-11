@@ -541,11 +541,48 @@ function buildRoutes(config) {
     }
   });
 
+  router.post('/files/:fileId/filecoin', async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const { filecoinCid, filecoinBackedUp } = req.body;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+      if (!filecoinCid) {
+        return res.status(400).json({ error: 'filecoinCid is required' });
+      }
+
+      const file = await FileModel.findOneAndUpdate(
+        { fileId },
+        {
+          $set: {
+            filecoinCid,
+            filecoinBackedUp: typeof filecoinBackedUp === 'boolean' ? filecoinBackedUp : true
+          }
+        },
+        { new: true }
+      );
+
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+
+      res.json({ ok: true, fileId: file.fileId, filecoinCid: file.filecoinCid });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/shards/register', async (req, res, next) => {
     try {
       const { shardId, fileId, order, sizeBytes, checksum, nodeIds } = req.body;
-      if (!shardId || !fileId || !checksum || !Array.isArray(nodeIds) || nodeIds.length === 0) {
-        return res.status(400).json({ error: 'shardId, fileId, checksum and nodeIds are required' });
+      if (!shardId || !fileId || !checksum) {
+        return res.status(400).json({ error: 'shardId, fileId, and checksum are required' });
+      }
+
+      if (nodeIds !== undefined && !Array.isArray(nodeIds)) {
+        return res.status(400).json({ error: 'nodeIds must be an array when provided' });
       }
 
       await ShardModel.findOneAndUpdate(
@@ -562,7 +599,7 @@ function buildRoutes(config) {
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
 
-      const uniqueNodeIds = [...new Set(nodeIds)];
+      const uniqueNodeIds = [...new Set(Array.isArray(nodeIds) ? nodeIds : [])];
       for (const nodeId of uniqueNodeIds) {
         await ShardPlacementModel.updateOne(
           { shardId, nodeId },
@@ -580,7 +617,9 @@ function buildRoutes(config) {
         );
       }
 
-      await ensureEmergencyReplicasForShard(shardId, config.emergencyReplicaFloor);
+      if (uniqueNodeIds.length > 0) {
+        await ensureEmergencyReplicasForShard(shardId, config.emergencyReplicaFloor);
+      }
 
       res.json({ ok: true });
     } catch (error) {
@@ -730,7 +769,9 @@ function buildRoutes(config) {
           sizeBytes: file.sizeBytes,
           shardCount: file.shardCount,
           cipher: file.cipher,
-          metadata: file.metadata
+          metadata: file.metadata,
+          filecoinCid: file.filecoinCid || null,
+          filecoinBackedUp: Boolean(file.filecoinBackedUp)
         },
         shards: shardManifests
       });

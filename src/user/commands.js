@@ -5,6 +5,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const { createApiClient, normalizeUrl } = require('./client');
 const { encryptAes256Gcm, decryptAes256Gcm, sha256Hex } = require('../common/crypto');
+const { uploadToFilecoin, retrieveFromFilecoin } = require('../../services/filecoin');
 
 function splitBuffer(buffer, shardSizeBytes) {
   if (shardSizeBytes <= 0) {
@@ -29,6 +30,159 @@ function parseAesKey(keyBase64) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function splitEncryptedBufferBySizes(buffer, shardSizes) {
+  const slices = [];
+  let offset = 0;
+
+  for (const sizeBytes of shardSizes) {
+    const size = Number(sizeBytes) || 0;
+    const end = offset + size;
+    if (end > buffer.length) {
+      throw new Error('filecoin buffer is smaller than expected shard sizes');
+    }
+    slices.push(buffer.subarray(offset, end));
+    offset = end;
+  }
+
+  if (offset < buffer.length) {
+    console.warn('[filecoin] extra bytes present after shard split; ignoring remainder');
+  }
+
+  return slices;
+}
+
+function decryptShardsFromBuffers(orderedShards, shardMetaMap, encryptedShardBuffers, keyBuffer) {
+  const plainParts = [];
+
+  for (let index = 0; index < orderedShards.length; index += 1) {
+    const shard = orderedShards[index];
+    const shardMeta = shardMetaMap.get(shard.shardId);
+    if (!shardMeta) {
+      throw new Error(`missing encryption metadata for shard ${shard.shardId}`);
+    }
+
+    const encryptedBuffer = encryptedShardBuffers[index];
+    if (!encryptedBuffer) {
+      throw new Error(`missing encrypted payload for shard ${shard.shardId}`);
+    }
+
+    if (sha256Hex(encryptedBuffer) !== shard.checksum) {
+      throw new Error(`checksum mismatch for shard ${shard.shardId} from filecoin`);
+    }
+
+    try {
+      const plain = decryptAes256Gcm(encryptedBuffer, keyBuffer, shardMeta.iv, shardMeta.authTag);
+      plainParts.push(plain);
+    } catch (error) {
+      if (String(error.message || '').includes('unsupported state or unable to authenticate data')) {
+        throw new Error(
+          `decryption failed for shard ${shard.shardId}: key is incorrect or metadata/key mismatch (double-check key-base64 copy)`
+        );
+      }
+      throw error;
+    }
+  }
+
+  return Buffer.concat(plainParts);
+}
+
+function fireAndForgetFilecoinUpload(api, fileBuffer, fileId) {
+  if (!fileBuffer || fileBuffer.length === 0) {
+    return;
+  }
+
+  void (async () => {
+    const cid = await uploadToFilecoin(fileBuffer, fileId);
+    if (!cid) {
+      return;
+    }
+
+    try {
+      await api.post(`/files/${fileId}/filecoin`, {
+        filecoinCid: cid,
+        filecoinBackedUp: true
+      });
+    } catch (error) {
+      const message = error.response?.data?.error || error.message;
+      console.warn(`[filecoin] failed to persist cid for ${fileId}: ${message}`);
+    }
+  })();
+}
+
+function fireAndForgetLayer1Reseed(api, fileId, orderedShards, encryptedShardBuffers, directTimeoutMs) {
+  void (async () => {
+    for (let index = 0; index < orderedShards.length; index += 1) {
+      const shard = orderedShards[index];
+      const encryptedBuffer = encryptedShardBuffers[index];
+      if (!encryptedBuffer || !Array.isArray(shard.replicas) || shard.replicas.length === 0) {
+        continue;
+      }
+
+      const directWriteResults = await Promise.allSettled(
+        shard.replicas.map(async (replica) => {
+          const putUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
+          await axios.put(putUrl, encryptedBuffer, {
+            headers: { 'Content-Type': 'application/octet-stream' },
+            timeout: directTimeoutMs
+          });
+          return replica;
+        })
+      );
+
+      const successfulReplicas = directWriteResults
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value);
+
+      const failedReplicas = directWriteResults
+        .map((result, replicaIndex) => ({ result, replica: shard.replicas[replicaIndex] }))
+        .filter((entry) => entry.result.status === 'rejected')
+        .map((entry) => ({
+          nodeId: entry.replica.nodeId,
+          url: entry.replica.url,
+          error: entry.result.reason?.message || 'direct write failed'
+        }));
+
+      if (failedReplicas.length > 0) {
+        try {
+          const relayResult = await relayStoreShard(api, {
+            shardId: shard.shardId,
+            fileId,
+            nodeIds: failedReplicas.map((replica) => replica.nodeId),
+            dataBuffer: encryptedBuffer
+          });
+
+          const promotedRelayReplicas = shard.replicas.filter((replica) =>
+            relayResult.successfulNodeIds.includes(replica.nodeId)
+          );
+
+          for (const replica of promotedRelayReplicas) {
+            if (!successfulReplicas.some((item) => item.nodeId === replica.nodeId)) {
+              successfulReplicas.push(replica);
+            }
+          }
+        } catch (relayError) {
+          console.warn(`[filecoin] reseed relay failed for shard ${shard.shardId}: ${relayError.message}`);
+        }
+      }
+
+      if (successfulReplicas.length > 0) {
+        try {
+          await api.post('/shards/register', {
+            shardId: shard.shardId,
+            fileId,
+            order: shard.order,
+            sizeBytes: shard.sizeBytes,
+            checksum: shard.checksum,
+            nodeIds: successfulReplicas.map((replica) => replica.nodeId)
+          });
+        } catch (registerError) {
+          console.warn(`[filecoin] reseed register failed for shard ${shard.shardId}: ${registerError.message}`);
+        }
+      }
+    }
+  })();
 }
 
 async function relayStoreShard(api, { shardId, fileId, nodeIds, dataBuffer, timeoutMs = 45000, pollMs = 200 }) {
@@ -147,27 +301,43 @@ async function uploadFile(options) {
   });
 
   const encryptionShardMeta = [];
+  const encryptedShardBuffers = [];
 
   for (let order = 0; order < chunks.length; order += 1) {
     const shardId = `${fileId}-shard-${order}-${uuidv4().slice(0, 8)}`;
     const encrypted = encryptAes256Gcm(chunks[order], keyBuffer);
     const checksum = sha256Hex(encrypted.cipherText);
+    encryptedShardBuffers[order] = encrypted.cipherText;
 
-    const placementResponse = await api.post('/shards/placement-plan', {
-      shardId,
-      sizeBytes: encrypted.cipherText.length,
-      replicas
-    });
+    let plannedReplicas = [];
+    try {
+      const placementResponse = await api.post('/shards/placement-plan', {
+        shardId,
+        sizeBytes: encrypted.cipherText.length,
+        replicas
+      });
 
-    const plannedReplicas = placementResponse.data.replicas || [];
-    if (plannedReplicas.length < replicas) {
-      throw new Error(`placement failed for ${shardId}: expected ${replicas} replicas`);
+      plannedReplicas = placementResponse.data.replicas || [];
+      if (plannedReplicas.length < replicas) {
+        console.warn(`[upload] placement returned ${plannedReplicas.length}/${replicas} replicas for ${shardId}`);
+      }
+    } catch (error) {
+      const apiMessage = error.response?.data?.error;
+      const statusCode = error.response?.status;
+      if (statusCode === 409 && String(apiMessage || '').startsWith('insufficient_online_nodes')) {
+        console.warn(`[upload] placement unavailable for ${shardId}: ${apiMessage}`);
+        plannedReplicas = [];
+      } else {
+        throw error;
+      }
     }
 
     let successfulReplicas = [];
     let failedReplicas = [];
 
-    if (relayFirst) {
+    if (plannedReplicas.length === 0) {
+      console.warn(`[upload] no donor replicas available for shard ${shardId}; continuing with Filecoin only`);
+    } else if (relayFirst) {
       failedReplicas = plannedReplicas.map((replica) => ({
         nodeId: replica.nodeId,
         url: replica.url,
@@ -216,7 +386,8 @@ async function uploadFile(options) {
     }
 
     if (successfulReplicas.length === 0) {
-      throw new Error(`failed to write shard ${shardId} to any replica: ${failedReplicas.map((r) => `${r.url} (${r.error})`).join(', ')}`);
+      const failures = failedReplicas.map((r) => `${r.url} (${r.error})`).join(', ');
+      console.warn(`[upload] shard ${shardId} stored on 0 donors${failures ? `: ${failures}` : ''}`);
     }
 
     if (failedReplicas.length > 0) {
@@ -256,6 +427,25 @@ async function uploadFile(options) {
     }
   });
 
+  // Upload to Filecoin as default (synchronous with retries)
+  const encryptedFileBuffer = Buffer.concat(encryptedShardBuffers);
+  console.log(`[filecoin] uploading to Filecoin (this may take a while)...`);
+  const filecoinCid = await uploadToFilecoin(encryptedFileBuffer, fileId);
+  if (filecoinCid) {
+    try {
+      await api.post(`/files/${fileId}/filecoin`, {
+        filecoinCid,
+        filecoinBackedUp: true
+      });
+      console.log(`[filecoin] backup complete, cid: ${filecoinCid}`);
+    } catch (error) {
+      const message = error.response?.data?.error || error.message;
+      console.warn(`[filecoin] warning: failed to persist cid: ${message}`);
+    }
+  } else {
+    console.warn(`[filecoin] warning: upload to Filecoin failed, file backed up to Layer 1 only`);
+  }
+
   console.log(`Upload complete`);
   console.log(`fileId: ${fileId}`);
   console.log(`originalName: ${originalName}`);
@@ -290,70 +480,94 @@ async function downloadFile(options) {
   const shardMetaMap = new Map((encryption.shards || []).map((entry) => [entry.shardId, entry]));
 
   const orderedShards = [...(manifest.shards || [])].sort((a, b) => a.order - b.order);
-  const plainParts = [];
+  let reconstructed = null;
 
-  for (const shard of orderedShards) {
-    const shardMeta = shardMetaMap.get(shard.shardId);
-    if (!shardMeta) {
-      throw new Error(`missing encryption metadata for shard ${shard.shardId}`);
-    }
+  try {
+    const plainParts = [];
 
-    let encryptedBuffer = null;
-    if (!relayFirst) {
-      const directFetchResults = await Promise.allSettled(
-        (shard.replicas || []).map(async (replica) => {
-          const getUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
-          const response = await axios.get(getUrl, {
-            responseType: 'arraybuffer',
-            timeout: directTimeoutMs
-          });
-          const candidate = Buffer.from(response.data);
-          if (sha256Hex(candidate) !== shard.checksum) {
-            throw new Error('checksum mismatch');
-          }
-          return candidate;
-        })
-      );
-
-      const successfulDirectFetch = directFetchResults.find((result) => result.status === 'fulfilled');
-      if (successfulDirectFetch) {
-        encryptedBuffer = successfulDirectFetch.value;
+    for (const shard of orderedShards) {
+      const shardMeta = shardMetaMap.get(shard.shardId);
+      if (!shardMeta) {
+        throw new Error(`missing encryption metadata for shard ${shard.shardId}`);
       }
-    }
 
-    if (!encryptedBuffer && Array.isArray(shard.replicas) && shard.replicas.length > 0) {
-      try {
-        const relayResult = await relayFetchShard(api, {
-          shardId: shard.shardId,
-          nodeIds: shard.replicas.map((replica) => replica.nodeId)
-        });
-
-        if (relayResult.data && sha256Hex(relayResult.data) === shard.checksum) {
-          encryptedBuffer = relayResult.data;
-        }
-      } catch (relayError) {
-        console.warn(`[download] relay fetch failed for shard ${shard.shardId}: ${relayError.message}`);
-      }
-    }
-
-    if (!encryptedBuffer) {
-      throw new Error(`failed to fetch valid replica for shard ${shard.shardId}`);
-    }
-
-    try {
-      const plain = decryptAes256Gcm(encryptedBuffer, keyBuffer, shardMeta.iv, shardMeta.authTag);
-      plainParts.push(plain);
-    } catch (error) {
-      if (String(error.message || '').includes('unsupported state or unable to authenticate data')) {
-        throw new Error(
-          `decryption failed for shard ${shard.shardId}: key is incorrect or metadata/key mismatch (double-check key-base64 copy)`
+      let encryptedBuffer = null;
+      if (!relayFirst) {
+        const directFetchResults = await Promise.allSettled(
+          (shard.replicas || []).map(async (replica) => {
+            const getUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
+            const response = await axios.get(getUrl, {
+              responseType: 'arraybuffer',
+              timeout: directTimeoutMs
+            });
+            const candidate = Buffer.from(response.data);
+            if (sha256Hex(candidate) !== shard.checksum) {
+              throw new Error('checksum mismatch');
+            }
+            return candidate;
+          })
         );
+
+        const successfulDirectFetch = directFetchResults.find((result) => result.status === 'fulfilled');
+        if (successfulDirectFetch) {
+          encryptedBuffer = successfulDirectFetch.value;
+        }
       }
+
+      if (!encryptedBuffer && Array.isArray(shard.replicas) && shard.replicas.length > 0) {
+        try {
+          const relayResult = await relayFetchShard(api, {
+            shardId: shard.shardId,
+            nodeIds: shard.replicas.map((replica) => replica.nodeId)
+          });
+
+          if (relayResult.data && sha256Hex(relayResult.data) === shard.checksum) {
+            encryptedBuffer = relayResult.data;
+          }
+        } catch (relayError) {
+          console.warn(`[download] relay fetch failed for shard ${shard.shardId}: ${relayError.message}`);
+        }
+      }
+
+      if (!encryptedBuffer) {
+        throw new Error(`failed to fetch valid replica for shard ${shard.shardId}`);
+      }
+
+      try {
+        const plain = decryptAes256Gcm(encryptedBuffer, keyBuffer, shardMeta.iv, shardMeta.authTag);
+        plainParts.push(plain);
+      } catch (error) {
+        if (String(error.message || '').includes('unsupported state or unable to authenticate data')) {
+          throw new Error(
+            `decryption failed for shard ${shard.shardId}: key is incorrect or metadata/key mismatch (double-check key-base64 copy)`
+          );
+        }
+        throw error;
+      }
+    }
+
+    reconstructed = Buffer.concat(plainParts);
+  } catch (error) {
+    console.warn(`[download] layer1 failed for ${fileId}: ${error.message}`);
+
+    const filecoinCid = manifest.file?.filecoinCid;
+    if (!filecoinCid) {
       throw error;
     }
-  }
 
-  const reconstructed = Buffer.concat(plainParts);
+    const encryptedFileBuffer = await retrieveFromFilecoin(filecoinCid);
+    if (!encryptedFileBuffer) {
+      throw new Error('filecoin retrieval failed');
+    }
+
+    const encryptedShardBuffers = splitEncryptedBufferBySizes(
+      encryptedFileBuffer,
+      orderedShards.map((shard) => shard.sizeBytes)
+    );
+
+    reconstructed = decryptShardsFromBuffers(orderedShards, shardMetaMap, encryptedShardBuffers, keyBuffer);
+    fireAndForgetLayer1Reseed(api, fileId, orderedShards, encryptedShardBuffers, directTimeoutMs);
+  }
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.writeFile(output, reconstructed);
 

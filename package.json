@@ -24,12 +24,14 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@filoz/synapse-sdk": "^0.41.0",
     "axios": "^1.11.0",
     "commander": "^14.0.1",
     "cors": "^2.8.5",
-    "dotenv": "^17.2.2",
+    "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "mongoose": "^8.18.0",
-    "uuid": "^13.0.0"
+    "uuid": "^13.0.0",
+    "viem": "^2.48.11"
   }
 }

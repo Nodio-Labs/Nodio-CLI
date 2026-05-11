@@ -23,6 +23,8 @@ const fileSchema = new mongoose.Schema(
     sizeBytes: { type: Number, required: true, min: 0 },
     shardCount: { type: Number, required: true, min: 1 },
     cipher: { type: String, required: true, default: 'aes-256-gcm' },
+    filecoinCid: { type: String, default: null },
+    filecoinBackedUp: { type: Boolean, default: false },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }
