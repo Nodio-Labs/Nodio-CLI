@@ -5,7 +5,7 @@ const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const { createApiClient, normalizeUrl } = require('./client');
 const { encryptAes256Gcm, decryptAes256Gcm, sha256Hex } = require('../common/crypto');
-const { uploadToFilecoin, retrieveFromFilecoin } = require('../../services/filecoin');
+const { retrieveFromFilecoin } = require('../../services/filecoin');
 
 function splitBuffer(buffer, shardSizeBytes) {
   if (shardSizeBytes <= 0) {
@@ -88,27 +88,19 @@ function decryptShardsFromBuffers(orderedShards, shardMetaMap, encryptedShardBuf
   return Buffer.concat(plainParts);
 }
 
-function fireAndForgetFilecoinUpload(api, fileBuffer, fileId) {
+async function requestFilecoinBackup(api, fileBuffer, fileId) {
   if (!fileBuffer || fileBuffer.length === 0) {
     return;
   }
 
-  void (async () => {
-    const cid = await uploadToFilecoin(fileBuffer, fileId);
-    if (!cid) {
-      return;
-    }
-
-    try {
-      await api.post(`/files/${fileId}/filecoin`, {
-        filecoinCid: cid,
-        filecoinBackedUp: true
-      });
-    } catch (error) {
-      const message = error.response?.data?.error || error.message;
-      console.warn(`[filecoin] failed to persist cid for ${fileId}: ${message}`);
-    }
-  })();
+  try {
+    await api.post(`/files/${fileId}/filecoin/upload`, {
+      dataBase64: fileBuffer.toString('base64')
+    });
+  } catch (error) {
+    const message = error.response?.data?.error || error.message;
+    console.warn(`[filecoin] server upload failed for ${fileId}: ${message}`);
+  }
 }
 
 function fireAndForgetLayer1Reseed(api, fileId, orderedShards, encryptedShardBuffers, directTimeoutMs) {
@@ -427,24 +419,10 @@ async function uploadFile(options) {
     }
   });
 
-  // Upload to Filecoin as default (synchronous with retries)
+  // Upload to Filecoin via the central server (uses server-side wallet key)
   const encryptedFileBuffer = Buffer.concat(encryptedShardBuffers);
-  console.log(`[filecoin] uploading to Filecoin (this may take a while)...`);
-  const filecoinCid = await uploadToFilecoin(encryptedFileBuffer, fileId);
-  if (filecoinCid) {
-    try {
-      await api.post(`/files/${fileId}/filecoin`, {
-        filecoinCid,
-        filecoinBackedUp: true
-      });
-      console.log(`[filecoin] backup complete, cid: ${filecoinCid}`);
-    } catch (error) {
-      const message = error.response?.data?.error || error.message;
-      console.warn(`[filecoin] warning: failed to persist cid: ${message}`);
-    }
-  } else {
-    console.warn(`[filecoin] warning: upload to Filecoin failed, file backed up to Layer 1 only`);
-  }
+  console.log(`[filecoin] uploading to Filecoin via central server (this may take a while)...`);
+  await requestFilecoinBackup(api, encryptedFileBuffer, fileId);
 
   console.log(`Upload complete`);
   console.log(`fileId: ${fileId}`);

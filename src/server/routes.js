@@ -9,6 +9,7 @@ const {
   ReplicationTaskModel,
   RelayTaskModel
 } = require('./models');
+const { uploadToFilecoin } = require('../../services/filecoin');
 const {
   chooseDistinctOnlineNodes,
   ensureEmergencyReplicasForShard
@@ -569,6 +570,49 @@ function buildRoutes(config) {
       }
 
       res.json({ ok: true, fileId: file.fileId, filecoinCid: file.filecoinCid });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/files/:fileId/filecoin/upload', async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const { dataBase64 } = req.body;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+      if (!dataBase64 || typeof dataBase64 !== 'string') {
+        return res.status(400).json({ error: 'dataBase64 is required' });
+      }
+
+      const payload = Buffer.from(dataBase64, 'base64');
+      if (!payload || payload.length === 0) {
+        return res.status(400).json({ error: 'dataBase64 decoded to empty payload' });
+      }
+
+      const cid = await uploadToFilecoin(payload, fileId);
+      if (!cid) {
+        return res.status(502).json({ error: 'filecoin upload failed' });
+      }
+
+      const file = await FileModel.findOneAndUpdate(
+        { fileId },
+        {
+          $set: {
+            filecoinCid: cid,
+            filecoinBackedUp: true
+          }
+        },
+        { new: true }
+      );
+
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+
+      res.json({ ok: true, fileId: file.fileId, filecoinCid: cid });
     } catch (error) {
       next(error);
     }
