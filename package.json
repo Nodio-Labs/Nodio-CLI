@@ -26,6 +26,8 @@
   "dependencies": {
     "@filoz/synapse-sdk": "^0.41.0",
     "axios": "^1.11.0",
+    "argon2": "^0.43.0",
+    "bcrypt": "^6.0.0",
     "commander": "^14.0.1",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",

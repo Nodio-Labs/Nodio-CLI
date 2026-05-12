@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const { Command } = require('commander');
-const { uploadFile, downloadFile, deleteFile } = require('./commands');
+const { uploadFile, downloadFile, deleteFile, login, logout, register, whoami } = require('./commands');
 
 const program = new Command();
 
@@ -25,7 +25,7 @@ program
   .command('download')
   .description('Download, verify, decrypt, and reconstruct a file')
   .requiredOption('--file-id <id>', 'file ID to download')
-  .requiredOption('--key-base64 <key>', '32-byte AES key in base64 from upload output')
+  .option('--key-base64 <key>', '32-byte AES key in base64 from upload output')
   .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .option('--output <path>', 'output file path')
   .option('--direct-timeout-ms <ms>', 'timeout for each direct donor attempt before relay fallback', '1200')
@@ -41,6 +41,37 @@ program
   .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .action(async (options) => {
     await deleteFile(options);
+  });
+
+program
+  .command('login')
+  .description('Login and persist a session locally')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
+  .action(async (options) => {
+    await login(options);
+  });
+
+program
+  .command('logout')
+  .description('Clear local session data')
+  .action(async () => {
+    await logout();
+  });
+
+program
+  .command('register')
+  .description('Create an account and persist a session locally')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
+  .action(async (options) => {
+    await register(options);
+  });
+
+program
+  .command('whoami')
+  .description('Show the current authenticated user')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
+  .action(async (options) => {
+    await whoami(options);
   });
 
 program.parseAsync(process.argv).catch((error) => {

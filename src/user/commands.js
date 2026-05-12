@@ -2,10 +2,132 @@ const fs = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const axios = require('axios');
+const readline = require('readline');
 const { v4: uuidv4 } = require('uuid');
 const { createApiClient, normalizeUrl } = require('./client');
 const { encryptAes256Gcm, decryptAes256Gcm, sha256Hex } = require('../common/crypto');
 const { retrieveFromFilecoin } = require('../../services/filecoin');
+const {
+  loadSession,
+  saveSession,
+  clearSession,
+  deriveMasterKey,
+  encryptMasterKey,
+  decryptMasterKey
+} = require('../cli/session');
+
+function promptInput(promptText) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(String(answer || '').trim());
+    });
+  });
+}
+
+function promptHiddenInput(promptText) {
+  return new Promise((resolve) => {
+    process.stdout.write(promptText);
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    rl.stdoutMuted = true;
+    rl._writeToOutput = function _writeToOutput(stringToWrite) {
+      if (rl.stdoutMuted) {
+        rl.output.write('*');
+      } else {
+        rl.output.write(stringToWrite);
+      }
+    };
+    rl.question('', (answer) => {
+      rl.history = rl.history.slice(1);
+      rl.close();
+      process.stdout.write('\n');
+      resolve(String(answer || ''));
+    });
+  });
+}
+
+async function requireSession() {
+  const session = await loadSession();
+  if (!session) {
+    console.log('Please login first using: npx nodio-cli nodio login');
+    process.exit(1);
+  }
+  return session;
+}
+
+function attachSessionToken(api, session) {
+  if (session?.apiToken) {
+    api.defaults.headers['x-api-token'] = session.apiToken;
+  }
+}
+
+function packEncryptedKey({ iv, authTag, cipherText }) {
+  return `${iv}:${authTag}:${cipherText.toString('base64')}`;
+}
+
+function unpackEncryptedKey(payload) {
+  const [iv, authTag, cipherText] = String(payload || '').split(':');
+  if (!iv || !authTag || !cipherText) {
+    throw new Error('invalid encrypted key format');
+  }
+  return {
+    iv,
+    authTag,
+    cipherText: Buffer.from(cipherText, 'base64')
+  };
+}
+
+async function buildSessionPayload(authResponse, password) {
+  const masterKey = await deriveMasterKey(password, authResponse.argon2Salt);
+  const encryptedMasterKey = encryptMasterKey(masterKey, authResponse.apiToken);
+  return {
+    apiToken: authResponse.apiToken,
+    argon2Salt: authResponse.argon2Salt,
+    userId: authResponse.userId,
+    email: authResponse.email || null,
+    encryptedMasterKey
+  };
+}
+
+async function login(options) {
+  const serverUrl = options.server;
+  const email = await promptInput('Email: ');
+  const password = await promptHiddenInput('Password: ');
+
+  const api = createApiClient(serverUrl);
+  const response = await api.post('/auth/login', { email, password });
+  const session = await buildSessionPayload(response.data, password);
+  await saveSession(session);
+  console.log('Logged in ✅');
+}
+
+async function register(options) {
+  const serverUrl = options.server;
+  const email = await promptInput('Email: ');
+  const password = await promptHiddenInput('Password: ');
+
+  const api = createApiClient(serverUrl);
+  const response = await api.post('/auth/register', { email, password });
+  const session = await buildSessionPayload({ ...response.data, email }, password);
+  await saveSession(session);
+  console.log('Registered ✅');
+}
+
+async function logout() {
+  await clearSession();
+  console.log('Logged out ✅');
+}
+
+async function whoami(options) {
+  const serverUrl = options.server;
+  const session = await requireSession();
+  const api = createApiClient(serverUrl);
+  attachSessionToken(api, session);
+  const response = await api.get('/auth/me');
+  console.log(`email: ${response.data?.email || session.email || 'unknown'}`);
+  console.log(`userId: ${response.data?.userId || session.userId || 'unknown'}`);
+}
 
 function splitBuffer(buffer, shardSizeBytes) {
   if (shardSizeBytes <= 0) {
@@ -261,6 +383,9 @@ async function uploadFile(options) {
   const directTimeoutMs = Number(options.directTimeoutMs || 1200);
   const relayFirst = Boolean(options.relayFirst);
 
+  const session = await requireSession();
+  const masterKey = decryptMasterKey(session.encryptedMasterKey, session.apiToken);
+
   if (!Number.isFinite(shardSizeMb) || shardSizeMb <= 0) {
     throw new Error('shard-size-mb must be greater than 0');
   }
@@ -277,8 +402,11 @@ async function uploadFile(options) {
 
   const keyBuffer = options.keyBase64 ? parseAesKey(options.keyBase64) : crypto.randomBytes(32);
   const keyBase64 = keyBuffer.toString('base64');
+  const encryptedKeyPayload = encryptAes256Gcm(keyBuffer, masterKey);
+  const encryptedAESKey = packEncryptedKey(encryptedKeyPayload);
 
   const api = createApiClient(serverUrl);
+  attachSessionToken(api, session);
   const fileId = options.fileId || uuidv4();
   const originalName = path.basename(filePath);
 
@@ -288,6 +416,7 @@ async function uploadFile(options) {
     sizeBytes: plainBuffer.length,
     shardCount: chunks.length,
     cipher: 'aes-256-gcm',
+    encryptedAESKey,
     metadata: {
       encryption: {
         algorithm: 'aes-256-gcm',
@@ -415,6 +544,7 @@ async function uploadFile(options) {
     sizeBytes: plainBuffer.length,
     shardCount: chunks.length,
     cipher: 'aes-256-gcm',
+    encryptedAESKey,
     metadata: {
       encryption: {
         algorithm: 'aes-256-gcm',
@@ -443,19 +573,42 @@ async function downloadFile(options) {
   const fileId = options.fileId;
   const serverUrl = options.server;
   const output = options.output ? path.resolve(options.output) : path.resolve(`./${fileId}.downloaded`);
-  const keyBuffer = parseAesKey(options.keyBase64);
   const directTimeoutMs = Number(options.directTimeoutMs || 1200);
   const relayFirst = Boolean(options.relayFirst);
+
+  const session = await requireSession();
+  const masterKey = decryptMasterKey(session.encryptedMasterKey, session.apiToken);
 
   if (!Number.isFinite(directTimeoutMs) || directTimeoutMs <= 0) {
     throw new Error('direct-timeout-ms must be greater than 0');
   }
 
   const api = createApiClient(serverUrl);
+  attachSessionToken(api, session);
   const manifestResponse = await api.get(`/files/${fileId}/manifest`);
   const manifest = manifestResponse.data;
   const metadata = manifest.file?.metadata || {};
   const encryption = metadata.encryption;
+
+  let keyBuffer = null;
+  if (options.keyBase64) {
+    keyBuffer = parseAesKey(options.keyBase64);
+  } else if (manifest.file?.encryptedAESKey) {
+    const encryptedKeyPayload = unpackEncryptedKey(manifest.file.encryptedAESKey);
+    keyBuffer = decryptAes256Gcm(
+      encryptedKeyPayload.cipherText,
+      masterKey,
+      encryptedKeyPayload.iv,
+      encryptedKeyPayload.authTag
+    );
+    if (!Buffer.isBuffer(keyBuffer) || keyBuffer.length !== 32) {
+      throw new Error('invalid decrypted AES key length');
+    }
+  }
+
+  if (!keyBuffer) {
+    throw new Error('missing encryption key; provide --key-base64 or login to access encrypted keys');
+  }
 
   if (!encryption || encryption.algorithm !== 'aes-256-gcm') {
     throw new Error('missing or unsupported encryption metadata');
@@ -566,6 +719,8 @@ async function deleteFile(options) {
   const serverUrl = options.server;
 
   const api = createApiClient(serverUrl);
+  const session = await requireSession();
+  attachSessionToken(api, session);
   const response = await api.delete(`/files/${fileId}`);
   const payload = response.data || {};
 
@@ -582,5 +737,9 @@ async function deleteFile(options) {
 module.exports = {
   uploadFile,
   downloadFile,
-  deleteFile
+  deleteFile,
+  login,
+  register,
+  logout,
+  whoami
 };

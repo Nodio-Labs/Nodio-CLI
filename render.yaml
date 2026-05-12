@@ -12,6 +12,14 @@ services:
         value: 20
       - key: NODIO_MONGO_URI
         sync: false
+      - key: NODIO_WALLET_PRIVATE_KEY
+        sync: false
+      - key: NODIO_WALLET_ADDRESS
+        sync: false
+      - key: FILECOIN_NETWORK
+        sync: false
+      - key: FILECOIN_RPC_URL
+        sync: false
       - key: NODIO_HEARTBEAT_INTERVAL_MS
         value: "30000"
       - key: NODIO_OFFLINE_AFTER_MISSES

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { UserModel } = require('./models/user');
 
 const nodeSchema = new mongoose.Schema(
   {
@@ -23,6 +24,8 @@ const fileSchema = new mongoose.Schema(
     sizeBytes: { type: Number, required: true, min: 0 },
     shardCount: { type: Number, required: true, min: 1 },
     cipher: { type: String, required: true, default: 'aes-256-gcm' },
+    userId: { type: String, default: null, index: true },
+    encryptedAESKey: { type: String, default: null },
     filecoinCid: { type: String, default: null },
     filecoinBackedUp: { type: Boolean, default: false },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
@@ -110,6 +113,7 @@ const relayTaskSchema = new mongoose.Schema(
 relayTaskSchema.index({ opId: 1, nodeId: 1, taskType: 1 });
 
 module.exports = {
+  UserModel,
   NodeModel: mongoose.model('Node', nodeSchema),
   FileModel: mongoose.model('File', fileSchema),
   ShardModel: mongoose.model('Shard', shardSchema),

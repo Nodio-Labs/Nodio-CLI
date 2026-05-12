@@ -9,6 +9,7 @@ const {
   ReplicationTaskModel,
   RelayTaskModel
 } = require('./models');
+const verifyToken = require('./middleware/verifyToken');
 const { uploadToFilecoin } = require('../../services/filecoin');
 const {
   chooseDistinctOnlineNodes,
@@ -511,9 +512,9 @@ function buildRoutes(config) {
     }
   });
 
-  router.post('/files/register', async (req, res, next) => {
+  router.post('/files/register', verifyToken, async (req, res, next) => {
     try {
-      const { fileId, originalName, sizeBytes, shardCount, cipher, metadata } = req.body;
+      const { fileId, originalName, sizeBytes, shardCount, cipher, metadata, encryptedAESKey } = req.body;
       if (!originalName || !Number.isFinite(Number(sizeBytes)) || Number(sizeBytes) < 0) {
         return res.status(400).json({ error: 'originalName and sizeBytes are required' });
       }
@@ -521,17 +522,33 @@ function buildRoutes(config) {
       const normalizedShardCount = parsePositiveInt(shardCount, 1);
       const actualFileId = fileId || uuidv4();
 
+      const existing = await FileModel.findOne({ fileId: actualFileId }).lean();
+      if (existing?.userId && existing.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const nextMetadata = metadata === undefined ? existing?.metadata || {} : metadata;
+      const update = {
+        fileId: actualFileId,
+        originalName,
+        sizeBytes: Number(sizeBytes),
+        shardCount: normalizedShardCount,
+        cipher: cipher || 'aes-256-gcm',
+        metadata: nextMetadata
+      };
+
+      if (!existing?.userId) {
+        update.userId = req.userId;
+      }
+
+      if (typeof encryptedAESKey === 'string' && encryptedAESKey.trim()) {
+        update.encryptedAESKey = encryptedAESKey.trim();
+      }
+
       const file = await FileModel.findOneAndUpdate(
         { fileId: actualFileId },
         {
-          $set: {
-            fileId: actualFileId,
-            originalName,
-            sizeBytes: Number(sizeBytes),
-            shardCount: normalizedShardCount,
-            cipher: cipher || 'aes-256-gcm',
-            metadata: metadata || {}
-          }
+          $set: update
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
@@ -542,7 +559,7 @@ function buildRoutes(config) {
     }
   });
 
-  router.post('/files/:fileId/filecoin', async (req, res, next) => {
+  router.post('/files/:fileId/filecoin', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
       const { filecoinCid, filecoinBackedUp } = req.body;
@@ -554,7 +571,15 @@ function buildRoutes(config) {
         return res.status(400).json({ error: 'filecoinCid is required' });
       }
 
-      const file = await FileModel.findOneAndUpdate(
+      const file = await FileModel.findOne({ fileId });
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const updated = await FileModel.findOneAndUpdate(
         { fileId },
         {
           $set: {
@@ -565,17 +590,13 @@ function buildRoutes(config) {
         { new: true }
       );
 
-      if (!file) {
-        return res.status(404).json({ error: 'file not found' });
-      }
-
-      res.json({ ok: true, fileId: file.fileId, filecoinCid: file.filecoinCid });
+      res.json({ ok: true, fileId: updated.fileId, filecoinCid: updated.filecoinCid });
     } catch (error) {
       next(error);
     }
   });
 
-  router.post('/files/:fileId/filecoin/upload', async (req, res, next) => {
+  router.post('/files/:fileId/filecoin/upload', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
       const { dataBase64 } = req.body;
@@ -597,7 +618,15 @@ function buildRoutes(config) {
         return res.status(502).json({ error: 'filecoin upload failed' });
       }
 
-      const file = await FileModel.findOneAndUpdate(
+      const file = await FileModel.findOne({ fileId });
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const updated = await FileModel.findOneAndUpdate(
         { fileId },
         {
           $set: {
@@ -608,11 +637,7 @@ function buildRoutes(config) {
         { new: true }
       );
 
-      if (!file) {
-        return res.status(404).json({ error: 'file not found' });
-      }
-
-      res.json({ ok: true, fileId: file.fileId, filecoinCid: cid });
+      res.json({ ok: true, fileId: updated.fileId, filecoinCid: cid });
     } catch (error) {
       next(error);
     }
@@ -696,12 +721,15 @@ function buildRoutes(config) {
     }
   });
 
-  router.delete('/files/:fileId', async (req, res, next) => {
+  router.delete('/files/:fileId', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
       const file = await FileModel.findOne({ fileId }).lean();
       if (!file) {
         return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       const shards = await ShardModel.find({ fileId }).select('shardId').lean();
@@ -771,12 +799,15 @@ function buildRoutes(config) {
     }
   });
 
-  router.get('/files/:fileId/manifest', async (req, res, next) => {
+  router.get('/files/:fileId/manifest', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
       const file = await FileModel.findOne({ fileId }).lean();
       if (!file) {
         return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
       }
 
       const shards = await ShardModel.find({ fileId }).sort({ order: 1 }).lean();
@@ -813,6 +844,8 @@ function buildRoutes(config) {
           sizeBytes: file.sizeBytes,
           shardCount: file.shardCount,
           cipher: file.cipher,
+          userId: file.userId || null,
+          encryptedAESKey: file.encryptedAESKey || null,
           metadata: file.metadata,
           filecoinCid: file.filecoinCid || null,
           filecoinBackedUp: Boolean(file.filecoinBackedUp)
