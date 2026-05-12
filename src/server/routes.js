@@ -57,6 +57,19 @@ function buildRoutes(config) {
     res.json({ ok: true, service: 'nodio-server' });
   });
 
+  router.get('/files', verifyToken, async (req, res, next) => {
+    try {
+      const files = await FileModel.find({ userId: req.userId })
+        .sort({ createdAt: -1 })
+        .select('fileId originalName sizeBytes createdAt filecoinBackedUp filecoinCid')
+        .lean();
+
+      res.json({ files });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/nodes/register', async (req, res, next) => {
     try {
       const { nodeId, deviceKey, nodeKey, knownNodeIds, url, capacityBytes, freeBytes } = req.body;

@@ -5,7 +5,8 @@ const mongoose = require('mongoose');
 const { getServerConfig } = require('./config');
 const { buildRoutes } = require('./routes');
 const authRoutes = require('./routes/auth');
-const { NodeModel } = require('./models');
+const { NodeModel, FileModel } = require('./models');
+const verifyToken = require('./middleware/verifyToken');
 const { markNodeOfflineAndRecover } = require('./services');
 const { getWalletBalance } = require('../../services/filecoin');
 
@@ -39,6 +40,19 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use('/api/auth', authRoutes);
   app.use('/api', buildRoutes(config));
+
+  app.get('/api/files', verifyToken, async (req, res, next) => {
+    try {
+      const files = await FileModel.find({ userId: req.userId })
+        .sort({ createdAt: -1 })
+        .select('fileId originalName sizeBytes createdAt filecoinBackedUp filecoinCid')
+        .lean();
+
+      res.json({ files });
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.use((error, _req, res, _next) => {
     const status = error.statusCode || 500;

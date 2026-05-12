@@ -129,6 +129,30 @@ async function whoami(options) {
   console.log(`userId: ${response.data?.userId || session.userId || 'unknown'}`);
 }
 
+async function listFiles(options) {
+  const serverUrl = options.server;
+  const session = await requireSession();
+  const api = createApiClient(serverUrl);
+  attachSessionToken(api, session);
+  const response = await api.get('/files');
+  const files = response.data?.files || [];
+
+  if (files.length === 0) {
+    console.log('No files found for this account.');
+    return;
+  }
+
+  for (const file of files) {
+    console.log(`fileId: ${file.fileId}`);
+    console.log(`name: ${file.originalName}`);
+    console.log(`sizeBytes: ${file.sizeBytes}`);
+    console.log(`createdAt: ${file.createdAt}`);
+    console.log(`filecoinBackedUp: ${Boolean(file.filecoinBackedUp)}`);
+    console.log(`filecoinCid: ${file.filecoinCid || ''}`);
+    console.log('---');
+  }
+}
+
 function splitBuffer(buffer, shardSizeBytes) {
   if (shardSizeBytes <= 0) {
     throw new Error('shard size must be greater than zero');
@@ -741,5 +765,6 @@ module.exports = {
   login,
   register,
   logout,
-  whoami
+  whoami,
+  listFiles
 };

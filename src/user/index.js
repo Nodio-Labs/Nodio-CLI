@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 const { Command } = require('commander');
-const { uploadFile, downloadFile, deleteFile, login, logout, register, whoami } = require('./commands');
+const {
+  uploadFile,
+  downloadFile,
+  deleteFile,
+  login,
+  logout,
+  register,
+  whoami,
+  listFiles
+} = require('./commands');
 
 const program = new Command();
 
@@ -72,6 +81,14 @@ program
   .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .action(async (options) => {
     await whoami(options);
+  });
+
+program
+  .command('files')
+  .description('List files uploaded by the authenticated user')
+  .option('--server <url>', 'central server URL', 'https://api.nodio.me')
+  .action(async (options) => {
+    await listFiles(options);
   });
 
 program.parseAsync(process.argv).catch((error) => {
