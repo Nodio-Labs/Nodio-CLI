@@ -18,6 +18,7 @@ async function startServer() {
   const app = express();
   const corsAllowlist = new Set([
     'https://nodio.me',
+    'http://nodio.me',
     'https://drive.nodio.me',
     'https://effective-space-rotary-phone-wrv6xg64p7w72wj-3000.app.github.dev',
     'https://cautious-sniffle-wrv6xg64pg7jhq7x-5173.app.github.dev',
