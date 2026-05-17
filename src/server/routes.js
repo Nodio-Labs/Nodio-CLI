@@ -10,7 +10,7 @@ const {
   RelayTaskModel
 } = require('./models');
 const verifyToken = require('./middleware/verifyToken');
-const { uploadToFilecoin } = require('../../services/filecoin');
+const { uploadToFilecoin, retrieveFromFilecoin } = require('../../services/filecoin');
 const {
   chooseDistinctOnlineNodes,
   ensureEmergencyReplicasForShard
@@ -926,6 +926,44 @@ function buildRoutes(config) {
         },
         shards: shardManifests
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Download assembled file (Filecoin-backed) when no donor shards available.
+  // Streams the decoded payload from Filecoin to the client.
+  router.get('/files/:fileId/download', verifyToken, async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const file = await FileModel.findOne({ fileId }).lean();
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const shardCount = await ShardModel.countDocuments({ fileId });
+      if (shardCount > 0) {
+        return res.status(409).json({ error: 'file has donor shards; use shard download flow (manifest + replicas)' });
+      }
+
+      if (!file.filecoinCid) {
+        return res.status(404).json({ error: 'no filecoin backup available' });
+      }
+
+      // retrieve from Filecoin (may take some time)
+      const payload = await retrieveFromFilecoin(file.filecoinCid);
+      if (!payload) {
+        return res.status(502).json({ error: 'filecoin retrieval failed' });
+      }
+
+      const name = file.originalName || 'download.bin';
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Length', String(payload.length));
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(name)}"`);
+      res.send(payload);
     } catch (error) {
       next(error);
     }
