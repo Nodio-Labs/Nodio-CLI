@@ -13,7 +13,6 @@ const {
   clearSession,
   deriveMasterKey,
   encryptMasterKey,
-  decryptMasterKey
 } = require('../cli/session');
 
 function promptInput(promptText) {
@@ -32,9 +31,7 @@ function promptHiddenInput(promptText) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
     rl.stdoutMuted = true;
     rl._writeToOutput = function _writeToOutput(stringToWrite) {
-      if (rl.stdoutMuted) {
-        rl.output.write('*');
-      } else {
+      if (!rl.stdoutMuted) {
         rl.output.write(stringToWrite);
       }
     };
@@ -50,7 +47,7 @@ function promptHiddenInput(promptText) {
 async function requireSession() {
   const session = await loadSession();
   if (!session) {
-    console.log('Please login first using: npx nodio-cli nodio login');
+    console.log('Please login: nodio login');
     process.exit(1);
   }
   return session;
@@ -58,7 +55,8 @@ async function requireSession() {
 
 function attachSessionToken(api, session) {
   if (session?.apiToken) {
-    api.defaults.headers['x-api-token'] = session.apiToken;
+    api.defaults.headers.common.Authorization = `Bearer ${session.apiToken}`;
+    api.defaults.headers.common['x-api-token'] = session.apiToken;
   }
 }
 
@@ -92,8 +90,8 @@ async function buildSessionPayload(authResponse, password) {
 
 async function login(options) {
   const serverUrl = options.server;
-  const email = await promptInput('Email: ');
-  const password = await promptHiddenInput('Password: ');
+  const email = await promptInput('Enter your email: ');
+  const password = await promptHiddenInput('Enter your account password: ');
 
   const api = createApiClient(serverUrl);
   const response = await api.post('/auth/login', { email, password });
@@ -104,8 +102,8 @@ async function login(options) {
 
 async function register(options) {
   const serverUrl = options.server;
-  const email = await promptInput('Email: ');
-  const password = await promptHiddenInput('Password: ');
+  const email = await promptInput('Enter your email: ');
+  const password = await promptHiddenInput('Enter your account password: ');
 
   const api = createApiClient(serverUrl);
   const response = await api.post('/auth/register', { email, password });
@@ -408,7 +406,6 @@ async function uploadFile(options) {
   const relayFirst = Boolean(options.relayFirst);
 
   const session = await requireSession();
-  const masterKey = decryptMasterKey(session.encryptedMasterKey, session.apiToken);
 
   if (!Number.isFinite(shardSizeMb) || shardSizeMb <= 0) {
     throw new Error('shard-size-mb must be greater than 0');
@@ -426,8 +423,6 @@ async function uploadFile(options) {
 
   const keyBuffer = options.keyBase64 ? parseAesKey(options.keyBase64) : crypto.randomBytes(32);
   const keyBase64 = keyBuffer.toString('base64');
-  const encryptedKeyPayload = encryptAes256Gcm(keyBuffer, masterKey);
-  const encryptedAESKey = packEncryptedKey(encryptedKeyPayload);
 
   const api = createApiClient(serverUrl);
   attachSessionToken(api, session);
@@ -440,7 +435,6 @@ async function uploadFile(options) {
     sizeBytes: plainBuffer.length,
     shardCount: chunks.length,
     cipher: 'aes-256-gcm',
-    encryptedAESKey,
     metadata: {
       encryption: {
         algorithm: 'aes-256-gcm',
@@ -568,7 +562,6 @@ async function uploadFile(options) {
     sizeBytes: plainBuffer.length,
     shardCount: chunks.length,
     cipher: 'aes-256-gcm',
-    encryptedAESKey,
     metadata: {
       encryption: {
         algorithm: 'aes-256-gcm',
@@ -584,13 +577,35 @@ async function uploadFile(options) {
   console.log(`[filecoin] uploading to Filecoin via central server (this may take a while)...`);
   await requestFilecoinBackup(api, encryptedFileBuffer, fileId);
 
-  console.log(`Upload complete`);
+  console.log(`Upload complete: fileId ${fileId}`);
   console.log(`fileId: ${fileId}`);
   console.log(`originalName: ${originalName}`);
   console.log(`sizeBytes: ${plainBuffer.length}`);
   console.log(`shardCount: ${chunks.length}`);
   console.log(`replicasPerShard: ${replicas}`);
-  console.log(`aes256KeyBase64: ${keyBase64}`);
+
+  if (session?.argon2Salt && session?.apiToken) {
+    console.log('Master password required to save the file key.');
+    const masterPassword = await promptHiddenInput('Enter your master password now: ');
+    try {
+      const masterKey = await deriveMasterKey(masterPassword, session.argon2Salt);
+      const encryptedKeyPayload = encryptAes256Gcm(keyBuffer, masterKey);
+      const encryptedAESKey = packEncryptedKey(encryptedKeyPayload);
+
+      await api.post(`/files/${fileId}/store-key`, {
+        encryptedAESKey
+      });
+
+      console.log('Key saved securely ✅');
+    } catch (error) {
+      if (String(error?.message || '').includes('unsupported state or unable to authenticate data')) {
+        throw new Error('Wrong master password');
+      }
+      throw error;
+    }
+  } else {
+    console.log(`aes256KeyBase64: ${keyBase64}`);
+  }
 }
 
 async function downloadFile(options) {
@@ -601,7 +616,6 @@ async function downloadFile(options) {
   const relayFirst = Boolean(options.relayFirst);
 
   const session = await requireSession();
-  const masterKey = decryptMasterKey(session.encryptedMasterKey, session.apiToken);
 
   if (!Number.isFinite(directTimeoutMs) || directTimeoutMs <= 0) {
     throw new Error('direct-timeout-ms must be greater than 0');
@@ -617,16 +631,36 @@ async function downloadFile(options) {
   let keyBuffer = null;
   if (options.keyBase64) {
     keyBuffer = parseAesKey(options.keyBase64);
-  } else if (manifest.file?.encryptedAESKey) {
-    const encryptedKeyPayload = unpackEncryptedKey(manifest.file.encryptedAESKey);
-    keyBuffer = decryptAes256Gcm(
-      encryptedKeyPayload.cipherText,
-      masterKey,
-      encryptedKeyPayload.iv,
-      encryptedKeyPayload.authTag
-    );
-    if (!Buffer.isBuffer(keyBuffer) || keyBuffer.length !== 32) {
-      throw new Error('invalid decrypted AES key length');
+  } else {
+    console.log('Fetching key from account...');
+    console.log('Master password required to decrypt the file key.');
+    const masterPassword = await promptHiddenInput('Enter your master password now: ');
+
+    try {
+      const masterKey = await deriveMasterKey(masterPassword, session.argon2Salt);
+      const keyResponse = await api.get(`/files/${fileId}/key`);
+      const encryptedAESKey = keyResponse.data?.encryptedAESKey;
+
+      if (!encryptedAESKey) {
+        throw new Error('missing stored key');
+      }
+
+      const encryptedKeyPayload = unpackEncryptedKey(encryptedAESKey);
+      keyBuffer = decryptAes256Gcm(
+        encryptedKeyPayload.cipherText,
+        masterKey,
+        encryptedKeyPayload.iv,
+        encryptedKeyPayload.authTag
+      );
+
+      if (!Buffer.isBuffer(keyBuffer) || keyBuffer.length !== 32) {
+        throw new Error('invalid decrypted AES key length');
+      }
+    } catch (error) {
+      if (String(error?.message || '').includes('unsupported state or unable to authenticate data')) {
+        throw new Error('Wrong master password');
+      }
+      throw error;
     }
   }
 
@@ -637,6 +671,8 @@ async function downloadFile(options) {
   if (!encryption || encryption.algorithm !== 'aes-256-gcm') {
     throw new Error('missing or unsupported encryption metadata');
   }
+
+  console.log('Downloading and decrypting...');
 
   const shardMetaMap = new Map((encryption.shards || []).map((entry) => [entry.shardId, entry]));
 
@@ -732,7 +768,7 @@ async function downloadFile(options) {
   await fs.mkdir(path.dirname(output), { recursive: true });
   await fs.writeFile(output, reconstructed);
 
-  console.log(`Download complete`);
+  console.log('Done ✅');
   console.log(`fileId: ${fileId}`);
   console.log(`output: ${output}`);
   console.log(`sizeBytes: ${reconstructed.length}`);

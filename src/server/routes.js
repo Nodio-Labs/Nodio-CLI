@@ -572,6 +572,67 @@ function buildRoutes(config) {
     }
   });
 
+  router.post('/files/:fileId/store-key', verifyToken, async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const encryptedAESKey = String(req.body?.encryptedAESKey || '').trim();
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+      if (!encryptedAESKey) {
+        return res.status(400).json({ error: 'encryptedAESKey is required' });
+      }
+
+      const file = await FileModel.findOne({ fileId });
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      await FileModel.findOneAndUpdate(
+        { fileId },
+        {
+          $set: {
+            encryptedAESKey
+          }
+        },
+        { new: true }
+      );
+
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/files/:fileId/key', verifyToken, async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+
+      const file = await FileModel.findOne({ fileId }).lean();
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      if (!file.encryptedAESKey) {
+        return res.status(404).json({ error: 'encrypted key not found' });
+      }
+
+      res.json({ encryptedAESKey: file.encryptedAESKey });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/files/:fileId/filecoin', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
