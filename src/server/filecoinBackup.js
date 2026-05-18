@@ -12,13 +12,18 @@ function normalizeUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
-function randomPick(items) {
+function shuffleItems(items) {
   if (!Array.isArray(items) || items.length === 0) {
-    return null;
+    return [];
   }
 
-  const idx = Math.floor(Math.random() * items.length);
-  return items[idx];
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+
+  return copy;
 }
 
 async function lockNodeForFilecoinUpload(nodeId, fileId, lockMs = 30 * 60 * 1000) {
@@ -134,7 +139,7 @@ async function fetchShardFromNode(node, shardId) {
   return Buffer.from(response.data);
 }
 
-async function pickSingleSourceNodeForFile(fileId, shards) {
+async function pickSourceNodesForFile(fileId, shards) {
   const shardIds = shards.map((shard) => shard.shardId);
   const placements = await ShardPlacementModel.find({
     fileId,
@@ -168,8 +173,8 @@ async function pickSingleSourceNodeForFile(fileId, shards) {
     .select('nodeId url nodeSecret')
     .lean();
 
-  const selected = randomPick(candidates);
-  if (!selected) {
+  const selected = shuffleItems(candidates);
+  if (selected.length === 0) {
     throw new Error('no online private node available to send file to filecoin');
   }
 
@@ -206,6 +211,30 @@ async function buildEncryptedFileBuffer(fileId, sourceNode) {
   return Buffer.concat(shardBuffers);
 }
 
+async function buildEncryptedFileBufferWithFallback(fileId, sourceNodes) {
+  let lastError = null;
+
+  for (const sourceNode of sourceNodes) {
+    await lockNodeForFilecoinUpload(sourceNode.nodeId, fileId);
+
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const encryptedFileBuffer = await buildEncryptedFileBuffer(fileId, sourceNode);
+      return { encryptedFileBuffer, sourceNode };
+    } catch (error) {
+      lastError = error;
+      console.warn(
+        `[filecoin-backup] file ${fileId}: source node ${sourceNode.nodeId} failed, trying another node: ${error.message}`
+      );
+    } finally {
+      // eslint-disable-next-line no-await-in-loop
+      await unlockNodeForFilecoinUpload(sourceNode.nodeId, fileId);
+    }
+  }
+
+  throw lastError || new Error('unable to fetch shards from any source node');
+}
+
 async function processFilecoinBackupJob(job) {
   const fileId = job.fileId;
   const file = await FileModel.findOne({ fileId }).lean();
@@ -235,22 +264,22 @@ async function processFilecoinBackupJob(job) {
     throw new Error('shards not found for file');
   }
 
-  const sourceNode = await pickSingleSourceNodeForFile(fileId, shards);
-  await lockNodeForFilecoinUpload(sourceNode.nodeId, fileId);
+  const sourceNodes = await pickSourceNodesForFile(fileId, shards);
+  const primarySourceNode = sourceNodes[0];
   await FilecoinBackupJobModel.updateOne(
     { _id: job._id },
     {
       $set: {
-        sourceNodeId: sourceNode.nodeId
+        sourceNodeId: primarySourceNode.nodeId
       }
     }
   );
 
-  console.log(`[filecoin-backup] file ${fileId}: selected source node ${sourceNode.nodeId}`);
+  console.log(`[filecoin-backup] file ${fileId}: selected source node ${primarySourceNode.nodeId}`);
   console.log(`[filecoin-backup] file ${fileId}: sending to filecoin...`);
 
   try {
-    const encryptedFileBuffer = await buildEncryptedFileBuffer(fileId, sourceNode);
+    const { encryptedFileBuffer, sourceNode } = await buildEncryptedFileBufferWithFallback(fileId, sourceNodes);
     const filecoinCid = await uploadToFilecoin(encryptedFileBuffer, fileId);
 
     if (!filecoinCid) {
@@ -268,8 +297,8 @@ async function processFilecoinBackupJob(job) {
     console.log(`[filecoin-backup] file ${fileId}: completed with cid ${filecoinCid}`);
 
     return { fileId, filecoinCid, sourceNodeId: sourceNode.nodeId };
-  } finally {
-    await unlockNodeForFilecoinUpload(sourceNode.nodeId, fileId);
+  } catch (error) {
+    throw error;
   }
 }
 
