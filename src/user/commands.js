@@ -275,7 +275,10 @@ function fireAndForgetLayer1Reseed(api, fileId, orderedShards, encryptedShardBuf
         shard.replicas.map(async (replica) => {
           const putUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
           await axios.put(putUrl, encryptedBuffer, {
-            headers: { 'Content-Type': 'application/octet-stream' },
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              Authorization: `Bearer ${replica.nodeSecret}`
+            },
             timeout: directTimeoutMs
           });
           return replica;
@@ -504,7 +507,10 @@ async function uploadFile(options) {
         plannedReplicas.map(async (replica) => {
           const putUrl = `${normalizeUrl(replica.url)}/shards/${shardId}`;
           await axios.put(putUrl, encrypted.cipherText, {
-            headers: { 'Content-Type': 'application/octet-stream' },
+              headers: {
+                'Content-Type': 'application/octet-stream',
+                Authorization: `Bearer ${replica.nodeSecret}`
+              },
             timeout: directTimeoutMs
           });
           return replica;
@@ -714,6 +720,9 @@ async function downloadFile(options) {
             const getUrl = `${normalizeUrl(replica.url)}/shards/${shard.shardId}`;
             const response = await axios.get(getUrl, {
               responseType: 'arraybuffer',
+              headers: {
+                Authorization: `Bearer ${replica.nodeSecret}`
+              },
               timeout: directTimeoutMs
             });
             const candidate = Buffer.from(response.data);

@@ -1,5 +1,6 @@
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const {
   NodeModel,
@@ -17,7 +18,8 @@ const {
 } = require('./services');
 const {
   queueFilecoinBackupJob,
-  processPendingFilecoinBackupJobs
+  processPendingFilecoinBackupJobs,
+  recordFilecoinBackupMessage
 } = require('./filecoinBackup');
 
 function parsePositiveInt(value, fallback) {
@@ -76,7 +78,7 @@ function buildRoutes(config) {
 
   router.post('/nodes/register', async (req, res, next) => {
     try {
-      const { nodeId, deviceKey, nodeKey, knownNodeIds, url, capacityBytes, freeBytes } = req.body;
+      const { nodeId, deviceKey, nodeKey, nodeSecret: providedNodeSecret, knownNodeIds, url, capacityBytes, freeBytes } = req.body;
 
       if (!url) {
         return res.status(400).json({ error: 'url is required' });
@@ -175,13 +177,22 @@ function buildRoutes(config) {
           { upsert: true, new: true, setDefaultsOnInsert: true }
         );
 
+      const nodeSecret = node.nodeSecret || (typeof providedNodeSecret === 'string' && providedNodeSecret.trim()) || crypto.randomBytes(64).toString('hex');
+      if (!node.nodeSecret || node.nodeSecret !== nodeSecret) {
+        await NodeModel.updateOne(
+          { nodeId: node.nodeId },
+          { $set: { nodeSecret } }
+        );
+      }
+
       res.json({
         nodeId: node.nodeId,
         status: node.status,
         heartbeatIntervalMs: config.heartbeatIntervalMs,
         relayPollIntervalMs: config.relayPollIntervalMs,
         minReplicas: config.minReplicas,
-        emergencyReplicaFloor: config.emergencyReplicaFloor
+        emergencyReplicaFloor: config.emergencyReplicaFloor,
+        nodeSecret
       });
     } catch (error) {
       next(error);
@@ -206,6 +217,10 @@ function buildRoutes(config) {
         node.freeBytes = Number(freeBytes);
       }
       await node.save();
+
+      const nodeLockedForFilecoin = Boolean(
+        node.filecoinUploadLockUntil && new Date(node.filecoinUploadLockUntil).getTime() > Date.now()
+      );
 
       if (Array.isArray(shardIds) && shardIds.length > 0) {
         try {
@@ -239,54 +254,61 @@ function buildRoutes(config) {
         }
       }
 
-      const pendingTasks = await ReplicationTaskModel.find({
-        targetNodeId: nodeId,
-        status: 'pending'
-      })
-        .sort({ createdAt: 1 })
-        .limit(5)
-        .lean();
+      let tasksWithSourceUrl = [];
+      let relayTasks = [];
 
-      if (pendingTasks.length > 0) {
-        await ReplicationTaskModel.updateMany(
-          { _id: { $in: pendingTasks.map((task) => task._id) } },
-          { $set: { status: 'in_progress' }, $inc: { attempts: 1 } }
-        );
-      }
-
-      const tasksWithSourceUrl = [];
-      for (const task of pendingTasks) {
-        const source = await NodeModel.findOne({ nodeId: task.sourceNodeId, status: 'online' })
-          .select('url nodeId')
+      if (!nodeLockedForFilecoin) {
+        const pendingTasks = await ReplicationTaskModel.find({
+          targetNodeId: nodeId,
+          status: 'pending'
+        })
+          .sort({ createdAt: 1 })
+          .limit(5)
           .lean();
 
-        if (!source) {
-          await ReplicationTaskModel.updateOne(
-            { _id: task._id },
-            {
-              $set: {
-                status: 'failed',
-                errorMessage: 'source node is offline'
-              }
-            }
+        if (pendingTasks.length > 0) {
+          await ReplicationTaskModel.updateMany(
+            { _id: { $in: pendingTasks.map((task) => task._id) } },
+            { $set: { status: 'in_progress' }, $inc: { attempts: 1 } }
           );
-          continue;
         }
 
-        tasksWithSourceUrl.push({
-          taskId: task._id.toString(),
-          shardId: task.shardId,
-          fileId: task.fileId,
-          sourceNodeId: source.nodeId,
-          sourceUrl: source.url
-        });
-      }
+        tasksWithSourceUrl = [];
+        for (const task of pendingTasks) {
+          const source = await NodeModel.findOne({ nodeId: task.sourceNodeId, status: 'online' })
+            .select('url nodeId nodeSecret')
+            .lean();
 
-      const relayTasks = await claimPendingRelayTasks(nodeId, 10);
+          if (!source) {
+            await ReplicationTaskModel.updateOne(
+              { _id: task._id },
+              {
+                $set: {
+                  status: 'failed',
+                  errorMessage: 'source node is offline'
+                }
+              }
+            );
+            continue;
+          }
+
+          tasksWithSourceUrl.push({
+            taskId: task._id.toString(),
+            shardId: task.shardId,
+            fileId: task.fileId,
+            sourceNodeId: source.nodeId,
+            sourceUrl: source.url,
+            sourceNodeSecret: source.nodeSecret || null
+          });
+        }
+
+        relayTasks = await claimPendingRelayTasks(nodeId, 10);
+      }
 
       res.json({
         ok: true,
         now: new Date().toISOString(),
+        nodeLockedForFilecoin,
         replicationTasks: tasksWithSourceUrl,
         relayTasks
       });
@@ -307,6 +329,19 @@ function buildRoutes(config) {
         return res.status(404).json({ error: 'node not found' });
       }
 
+      const nodeLockedForFilecoin = Boolean(
+        node.filecoinUploadLockUntil && new Date(node.filecoinUploadLockUntil).getTime() > Date.now()
+      );
+
+      if (nodeLockedForFilecoin) {
+        return res.json({
+          ok: true,
+          now: new Date().toISOString(),
+          nodeLockedForFilecoin: true,
+          relayTasks: []
+        });
+      }
+
       const relayTasks = await claimPendingRelayTasks(nodeId, 10);
 
       if (relayTasks.length > 0 && node.pendingRelayAlert) {
@@ -320,6 +355,24 @@ function buildRoutes(config) {
         now: new Date().toISOString(),
         relayTasks
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/nodes/:nodeId/secret', verifyToken, async (req, res, next) => {
+    try {
+      const { nodeId } = req.params;
+      if (!nodeId) {
+        return res.status(400).json({ error: 'nodeId is required' });
+      }
+
+      const node = await NodeModel.findOne({ nodeId }).select('nodeId nodeSecret').lean();
+      if (!node) {
+        return res.status(404).json({ error: 'node not found' });
+      }
+
+      return res.json({ nodeSecret: node.nodeSecret || null });
     } catch (error) {
       next(error);
     }
@@ -721,6 +774,56 @@ function buildRoutes(config) {
     }
   });
 
+  router.post('/files/:fileId/filecoin/message', verifyToken, async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+      const { filecoinCid, nodeId, sourceNodeId } = req.body;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+      if (!filecoinCid || typeof filecoinCid !== 'string') {
+        return res.status(400).json({ error: 'filecoinCid is required' });
+      }
+      if (!nodeId || typeof nodeId !== 'string') {
+        return res.status(400).json({ error: 'nodeId is required' });
+      }
+
+      const file = await FileModel.findOne({ fileId }).lean();
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const allowedNodeIds = new Set();
+      if (sourceNodeId && typeof sourceNodeId === 'string') {
+        allowedNodeIds.add(sourceNodeId);
+      }
+
+      const placementRows = await ShardPlacementModel.find({ fileId, status: 'available' }).select('nodeId').lean();
+      for (const placement of placementRows) {
+        allowedNodeIds.add(placement.nodeId);
+      }
+
+      if (!allowedNodeIds.has(nodeId)) {
+        return res.status(403).json({ error: 'node is not allowed to report this file' });
+      }
+
+      await recordFilecoinBackupMessage({
+        fileId,
+        filecoinCid,
+        reportedByNodeId: nodeId,
+        sourceNodeId: sourceNodeId || nodeId
+      });
+
+      res.json({ ok: true, fileId, filecoinCid, nodeId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/files/:fileId/filecoin/queue', verifyToken, async (req, res, next) => {
     try {
       const { fileId } = req.params;
@@ -805,7 +908,7 @@ function buildRoutes(config) {
     }
   });
 
-  router.post('/shards/placement-plan', async (req, res, next) => {
+  router.post('/shards/placement-plan', verifyToken, async (req, res, next) => {
     try {
       const { shardId, sizeBytes, replicas } = req.body;
       if (!shardId || !Number.isFinite(Number(sizeBytes)) || Number(sizeBytes) < 0) {
@@ -819,7 +922,8 @@ function buildRoutes(config) {
         shardId,
         replicas: nodes.map((node) => ({
           nodeId: node.nodeId,
-          url: node.url
+          url: node.url,
+          nodeSecret: node.nodeSecret || null
         }))
       });
     } catch (error) {
@@ -848,25 +952,30 @@ function buildRoutes(config) {
       const nodeIds = [...new Set(placements.map((placement) => placement.nodeId))];
 
       const onlineNodes = await NodeModel.find({ nodeId: { $in: nodeIds }, status: 'online' })
-        .select('nodeId url')
+        .select('nodeId url nodeSecret')
         .lean();
-      const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, node.url]));
+      const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, { url: node.url, nodeSecret: node.nodeSecret || null }]));
 
       const shardDeleteFailures = [];
       let deleteAttempts = 0;
       let deleteSuccesses = 0;
       let deleteSkippedOffline = 0;
       for (const placement of placements) {
-        const nodeUrl = nodeUrlMap.get(placement.nodeId);
-        if (!nodeUrl) {
+        const nodeInfo = nodeUrlMap.get(placement.nodeId);
+        if (!nodeInfo?.url) {
           deleteSkippedOffline += 1;
           continue;
         }
 
-        const deleteUrl = `${normalizeUrl(nodeUrl)}/shards/${placement.shardId}`;
+        const deleteUrl = `${normalizeUrl(nodeInfo.url)}/shards/${placement.shardId}`;
         deleteAttempts += 1;
         try {
-          await axios.delete(deleteUrl, { timeout: 15000 });
+          await axios.delete(deleteUrl, {
+            timeout: 15000,
+            headers: {
+              Authorization: `Bearer ${nodeInfo.nodeSecret}`
+            }
+          });
           deleteSuccesses += 1;
         } catch (error) {
           shardDeleteFailures.push({
@@ -924,16 +1033,17 @@ function buildRoutes(config) {
 
       const nodeIds = [...new Set(placements.map((placement) => placement.nodeId))];
       const nodes = await NodeModel.find({ nodeId: { $in: nodeIds }, status: 'online' })
-        .select('nodeId url')
+        .select('nodeId url nodeSecret')
         .lean();
-      const nodeMap = new Map(nodes.map((node) => [node.nodeId, node.url]));
+      const nodeMap = new Map(nodes.map((node) => [node.nodeId, { url: node.url, nodeSecret: node.nodeSecret || null }]));
 
       const shardManifests = shards.map((shard) => {
         const shardPlacements = placements
           .filter((placement) => placement.shardId === shard.shardId)
           .map((placement) => ({
             nodeId: placement.nodeId,
-            url: nodeMap.get(placement.nodeId)
+            url: nodeMap.get(placement.nodeId)?.url,
+            nodeSecret: nodeMap.get(placement.nodeId)?.nodeSecret || null
           }))
           .filter((placement) => Boolean(placement.url));
 

@@ -11,6 +11,9 @@ const nodeSchema = new mongoose.Schema(
     freeBytes: { type: Number, required: true, min: 0 },
     status: { type: String, enum: ['online', 'offline'], default: 'online', index: true },
     lastHeartbeatAt: { type: Date, default: Date.now, index: true },
+    nodeSecret: { type: String },
+    filecoinUploadLockUntil: { type: Date, default: null },
+    filecoinUploadLockFileId: { type: String, default: null },
     pendingRelayAlert: { type: Boolean, default: false },
     pendingRelayAlertAt: { type: Date, default: null }
   },
@@ -28,6 +31,8 @@ const fileSchema = new mongoose.Schema(
     encryptedAESKey: { type: String, default: null },
     filecoinCid: { type: String, default: null },
     filecoinBackedUp: { type: Boolean, default: false },
+    filecoinReportedByNodeId: { type: String, default: null },
+    filecoinReportedAt: { type: Date, default: null },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
   },
   { timestamps: true }
@@ -122,6 +127,9 @@ const filecoinBackupJobSchema = new mongoose.Schema(
       index: true
     },
     attempts: { type: Number, default: 0 },
+    sourceNodeId: { type: String, default: null },
+    reportedByNodeId: { type: String, default: null },
+    reportedAt: { type: Date, default: null },
     filecoinCid: { type: String, default: null },
     errorMessage: { type: String, default: null },
     lastAttemptAt: { type: Date, default: null },

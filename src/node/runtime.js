@@ -29,6 +29,8 @@ class NodioNodeRuntime {
       this.nodeId = await this.shardStore.getSavedNodeId();
     }
 
+    this.nodeSecret = await this.shardStore.getSavedNodeSecret();
+
     await this.startShardServer();
     await this.registerNode();
     await this.sendHeartbeat();
@@ -54,7 +56,16 @@ class NodioNodeRuntime {
     const app = express();
     app.use('/shards/:shardId', express.raw({ type: '*/*', limit: '200mb' }));
 
-    app.put('/shards/:shardId', async (req, res) => {
+    const requireNodeSecret = (req, res, next) => {
+      const authHeader = req.headers.authorization;
+      const token = authHeader?.replace('Bearer ', '');
+      if (!token || token !== this.nodeSecret) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      return next();
+    };
+
+    app.put('/shards/:shardId', requireNodeSecret, async (req, res) => {
       try {
         const { shardId } = req.params;
         if (!Buffer.isBuffer(req.body)) {
@@ -67,7 +78,7 @@ class NodioNodeRuntime {
       }
     });
 
-    app.get('/shards/:shardId', async (req, res) => {
+    app.get('/shards/:shardId', requireNodeSecret, async (req, res) => {
       try {
         const { shardId } = req.params;
         if (!(await this.shardStore.hasShard(shardId))) {
@@ -82,7 +93,7 @@ class NodioNodeRuntime {
       }
     });
 
-    app.delete('/shards/:shardId', async (req, res) => {
+    app.delete('/shards/:shardId', requireNodeSecret, async (req, res) => {
       try {
         const { shardId } = req.params;
         const result = await this.shardStore.deleteShard(shardId);
@@ -120,11 +131,13 @@ class NodioNodeRuntime {
     const deviceKey = await getOrCreateDeviceKey();
     const nodeKey = await this.shardStore.getOrCreateNodeKey();
     const knownNodeIds = await this.shardStore.discoverKnownNodeIds();
+    const nodeSecret = this.nodeSecret || undefined;
 
     const response = await axios.post(`${this.serverUrl}/api/nodes/register`, {
       nodeId: this.nodeId,
       deviceKey,
       nodeKey,
+      nodeSecret,
       knownNodeIds,
       url: this.publicUrl,
       capacityBytes: this.capacityBytes,
@@ -133,6 +146,11 @@ class NodioNodeRuntime {
 
     this.nodeId = response.data.nodeId;
     await this.shardStore.saveAssignedNodeId(this.nodeId);
+
+    if (response.data.nodeSecret) {
+      this.nodeSecret = response.data.nodeSecret;
+      await this.shardStore.saveAssignedNodeSecret(this.nodeSecret);
+    }
 
     const interval = Number(response.data.heartbeatIntervalMs);
     if (Number.isFinite(interval) && interval > 0) {
@@ -197,7 +215,10 @@ class NodioNodeRuntime {
     try {
       const sourceResponse = await axios.get(sourceShardUrl, {
         responseType: 'arraybuffer',
-        timeout: 30000
+        timeout: 30000,
+        headers: {
+          Authorization: `Bearer ${task.sourceNodeSecret}`
+        }
       });
       const data = Buffer.from(sourceResponse.data);
       await this.shardStore.saveShard(task.shardId, data);

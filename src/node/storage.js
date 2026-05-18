@@ -67,6 +67,11 @@ class LocalShardStore {
     return identity.nodeId || null;
   }
 
+  async getSavedNodeSecret() {
+    const identity = await this.readIdentity();
+    return identity.nodeSecret || null;
+  }
+
   async discoverKnownNodeIds() {
     const known = new Set();
 
@@ -113,6 +118,19 @@ class LocalShardStore {
     await this.writeIdentity({
       ...identity,
       nodeId,
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  async saveAssignedNodeSecret(nodeSecret) {
+    if (!nodeSecret) {
+      return;
+    }
+
+    const identity = await this.readIdentity();
+    await this.writeIdentity({
+      ...identity,
+      nodeSecret,
       updatedAt: new Date().toISOString()
     });
   }

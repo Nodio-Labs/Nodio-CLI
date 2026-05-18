@@ -7,9 +7,14 @@ const {
 
 async function chooseDistinctOnlineNodes(requiredCount, minFreeBytes = 0, excludedNodeIds = []) {
   const excluded = new Set(excludedNodeIds);
+  const now = new Date();
 
   const candidates = await NodeModel.find({
     status: 'online',
+    $or: [
+      { filecoinUploadLockUntil: null },
+      { filecoinUploadLockUntil: { $lte: now } }
+    ],
     freeBytes: { $gte: minFreeBytes },
     nodeId: { $nin: [...excluded] }
   })
