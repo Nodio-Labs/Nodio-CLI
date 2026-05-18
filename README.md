@@ -77,7 +77,7 @@ Run more nodes by changing `--node-id`, `--port`, and `--storage-dir`.
 
 ## User CLI (Phase 2)
 
-Upload (encrypt + shard + distribute):
+Upload (encrypt + shard + distribute, then queue Filecoin backup if private nodes were used):
 
 ```bash
 npm run start:cli -- upload \
@@ -106,6 +106,8 @@ npm run start:cli -- download \
 - Files can be represented as shards with metadata in MongoDB (`files`, `shards`, and `shard placements`)
 - Placement planning enforces distinct nodes per shard and defaults to 5 replicas
 - User uploads enforce at least 5 replicas per shard
+- When donor nodes are available, uploads go to private nodes first and the server queues a backend Filecoin backup job
+- If no private nodes are available, uploads still fall back directly to Filecoin
 - Node heartbeats every 30 seconds update status and available storage
 - If a node misses 3 heartbeat intervals, it is marked offline
 - When live replicas of a shard drop below 2, the server immediately creates replication tasks to healthy nodes

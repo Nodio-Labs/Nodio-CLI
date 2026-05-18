@@ -112,6 +112,24 @@ const relayTaskSchema = new mongoose.Schema(
 
 relayTaskSchema.index({ opId: 1, nodeId: 1, taskType: 1 });
 
+const filecoinBackupJobSchema = new mongoose.Schema(
+  {
+    fileId: { type: String, required: true, unique: true, index: true },
+    status: {
+      type: String,
+      enum: ['pending', 'in_progress', 'completed', 'failed'],
+      default: 'pending',
+      index: true
+    },
+    attempts: { type: Number, default: 0 },
+    filecoinCid: { type: String, default: null },
+    errorMessage: { type: String, default: null },
+    lastAttemptAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null }
+  },
+  { timestamps: true }
+);
+
 module.exports = {
   UserModel,
   NodeModel: mongoose.model('Node', nodeSchema),
@@ -119,5 +137,6 @@ module.exports = {
   ShardModel: mongoose.model('Shard', shardSchema),
   ShardPlacementModel: mongoose.model('ShardPlacement', shardPlacementSchema),
   ReplicationTaskModel: mongoose.model('ReplicationTask', replicationTaskSchema),
-  RelayTaskModel: mongoose.model('RelayTask', relayTaskSchema)
+  RelayTaskModel: mongoose.model('RelayTask', relayTaskSchema),
+  FilecoinBackupJobModel: mongoose.model('FilecoinBackupJob', filecoinBackupJobSchema)
 };

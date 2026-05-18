@@ -8,6 +8,7 @@ const authRoutes = require('./routes/auth');
 const { NodeModel, FileModel } = require('./models');
 const verifyToken = require('./middleware/verifyToken');
 const { markNodeOfflineAndRecover } = require('./services');
+const { processPendingFilecoinBackupJobs } = require('./filecoinBackup');
 const { getWalletBalance } = require('../../services/filecoin');
 
 async function startServer() {
@@ -89,6 +90,12 @@ async function startServer() {
       console.error('[offline-monitor]', error);
     }
   }, config.heartbeatIntervalMs);
+
+  setInterval(() => {
+    processPendingFilecoinBackupJobs(1).catch((error) => {
+      console.error('[filecoin-backup]', error);
+    });
+  }, config.filecoinBackupIntervalMs);
 
   app.listen(config.port, () => {
     console.log(`Nodio central server listening on port ${config.port}`);

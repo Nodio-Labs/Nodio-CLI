@@ -232,7 +232,7 @@ function decryptShardsFromBuffers(orderedShards, shardMetaMap, encryptedShardBuf
   return Buffer.concat(plainParts);
 }
 
-async function requestFilecoinBackup(api, fileBuffer, fileId) {
+async function uploadFilecoinDirect(api, fileBuffer, fileId) {
   if (!fileBuffer || fileBuffer.length === 0) {
     return;
   }
@@ -250,6 +250,15 @@ async function requestFilecoinBackup(api, fileBuffer, fileId) {
   } catch (error) {
     const message = error.response?.data?.error || error.message;
     console.warn(`[filecoin] server upload failed for ${fileId}: ${message}`);
+  }
+}
+
+async function queueFilecoinBackup(api, fileId) {
+  try {
+    await api.post(`/files/${fileId}/filecoin/queue`, {}, { timeout: 30000 });
+  } catch (error) {
+    const message = error.response?.data?.error || error.message;
+    console.warn(`[filecoin] queue failed for ${fileId}: ${message}`);
   }
 }
 
@@ -447,6 +456,7 @@ async function uploadFile(options) {
 
   const encryptionShardMeta = [];
   const encryptedShardBuffers = [];
+  let allShardsBackedByPrivateNodes = true;
 
   for (let order = 0; order < chunks.length; order += 1) {
     const shardId = `${fileId}-shard-${order}-${uuidv4().slice(0, 8)}`;
@@ -482,6 +492,7 @@ async function uploadFile(options) {
 
     if (plannedReplicas.length === 0) {
       console.warn(`[upload] no donor replicas available for shard ${shardId}; continuing with Filecoin only`);
+      allShardsBackedByPrivateNodes = false;
     } else if (relayFirst) {
       failedReplicas = plannedReplicas.map((replica) => ({
         nodeId: replica.nodeId,
@@ -512,6 +523,10 @@ async function uploadFile(options) {
           url: entry.replica.url,
           error: entry.result.reason?.message || 'direct write failed'
         }));
+    }
+
+    if (successfulReplicas.length === 0) {
+      allShardsBackedByPrivateNodes = false;
     }
 
     if (failedReplicas.length > 0) {
@@ -572,10 +587,14 @@ async function uploadFile(options) {
     }
   });
 
-  // Upload to Filecoin via the central server (uses server-side wallet key)
   const encryptedFileBuffer = Buffer.concat(encryptedShardBuffers);
-  console.log(`[filecoin] uploading to Filecoin via central server (this may take a while)...`);
-  await requestFilecoinBackup(api, encryptedFileBuffer, fileId);
+  if (allShardsBackedByPrivateNodes) {
+    console.log('[filecoin] private-node upload finished, queueing backend Filecoin backup...');
+    await queueFilecoinBackup(api, fileId);
+  } else {
+    console.log(`[filecoin] uploading to Filecoin via central server (this may take a while)...`);
+    await uploadFilecoinDirect(api, encryptedFileBuffer, fileId);
+  }
 
   console.log(`Upload complete: fileId ${fileId}`);
   console.log(`fileId: ${fileId}`);

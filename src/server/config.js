@@ -6,6 +6,7 @@ function getServerConfig() {
     port: Number(process.env.PORT || process.env.NODIO_SERVER_PORT || 4000),
     mongoUri: process.env.NODIO_MONGO_URI || 'mongodb://127.0.0.1:27017/nodio',
     heartbeatIntervalMs: Number(process.env.NODIO_HEARTBEAT_INTERVAL_MS || 10000),
+    filecoinBackupIntervalMs: Number(process.env.NODIO_FILECOIN_BACKUP_INTERVAL_MS || 10000),
     relayPollIntervalMs: Number(process.env.NODIO_RELAY_POLL_INTERVAL_MS || 1000),
     offlineAfterMisses: Number(process.env.NODIO_OFFLINE_AFTER_MISSES || 3),
     minReplicas: Number(process.env.NODIO_MIN_REPLICAS || 5),

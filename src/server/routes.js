@@ -15,6 +15,10 @@ const {
   chooseDistinctOnlineNodes,
   ensureEmergencyReplicasForShard
 } = require('./services');
+const {
+  queueFilecoinBackupJob,
+  processPendingFilecoinBackupJobs
+} = require('./filecoinBackup');
 
 function parsePositiveInt(value, fallback) {
   const n = Number(value);
@@ -712,6 +716,37 @@ function buildRoutes(config) {
       );
 
       res.json({ ok: true, fileId: updated.fileId, filecoinCid: cid });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/files/:fileId/filecoin/queue', verifyToken, async (req, res, next) => {
+    try {
+      const { fileId } = req.params;
+
+      if (!fileId) {
+        return res.status(400).json({ error: 'fileId is required' });
+      }
+
+      const file = await FileModel.findOne({ fileId });
+      if (!file) {
+        return res.status(404).json({ error: 'file not found' });
+      }
+      if (file.userId && file.userId !== req.userId) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      if (file.filecoinBackedUp && file.filecoinCid) {
+        return res.json({ ok: true, fileId, queued: false, filecoinCid: file.filecoinCid });
+      }
+
+      const job = await queueFilecoinBackupJob(fileId);
+      void processPendingFilecoinBackupJobs(1).catch((error) => {
+        console.error('[filecoin-backup] immediate queue kick failed', error);
+      });
+
+      res.json({ ok: true, fileId, queued: true, jobId: job._id.toString() });
     } catch (error) {
       next(error);
     }
