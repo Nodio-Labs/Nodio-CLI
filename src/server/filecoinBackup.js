@@ -130,7 +130,7 @@ async function claimPendingFilecoinBackupJob() {
 async function fetchShardFromNode(node, shardId) {
   const response = await axios.get(`${normalizeUrl(node.url)}/shards/${shardId}`, {
     responseType: 'arraybuffer',
-    timeout: 15000,
+    timeout: 5 * 60 * 1000,
     headers: {
       Authorization: `Bearer ${node.nodeSecret}`
     }
