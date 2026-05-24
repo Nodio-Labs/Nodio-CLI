@@ -76,6 +76,26 @@ function unpackEncryptedKey(payload) {
   };
 }
 
+function isTimeoutLikeError(error) {
+  const message = String(error?.message || '');
+  return error?.code === 'ECONNABORTED' || /timeout/i.test(message);
+}
+
+async function verifyShardStoredOnReplica(replica, shardId) {
+  try {
+    await axios.get(`${normalizeUrl(replica.url)}/shards/${shardId}`, {
+      responseType: 'arraybuffer',
+      timeout: 5000,
+      headers: {
+        Authorization: `Bearer ${replica.nodeSecret}`
+      }
+    });
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
 async function buildSessionPayload(authResponse, password) {
   const masterKey = await deriveMasterKey(password, authResponse.argon2Salt);
   const encryptedMasterKey = encryptMasterKey(masterKey, authResponse.apiToken);
@@ -503,31 +523,46 @@ async function uploadFile(options) {
         error: 'direct write skipped (relay-first)'
       }));
     } else {
-      const directWriteResults = await Promise.allSettled(
+      const directWriteResults = await Promise.all(
         plannedReplicas.map(async (replica) => {
           const putUrl = `${normalizeUrl(replica.url)}/shards/${shardId}`;
-          await axios.put(putUrl, encrypted.cipherText, {
+          try {
+            await axios.put(putUrl, encrypted.cipherText, {
               headers: {
                 'Content-Type': 'application/octet-stream',
                 Authorization: `Bearer ${replica.nodeSecret}`
               },
-            timeout: directTimeoutMs
-          });
-          return replica;
+              timeout: directTimeoutMs
+            });
+
+            return { status: 'fulfilled', replica };
+          } catch (error) {
+            if (isTimeoutLikeError(error)) {
+              const stored = await verifyShardStoredOnReplica(replica, shardId);
+              if (stored) {
+                return { status: 'fulfilled', replica, recoveredFromTimeout: true };
+              }
+            }
+
+            return {
+              status: 'rejected',
+              replica,
+              error: error?.message || 'direct write failed'
+            };
+          }
         })
       );
 
       successfulReplicas = directWriteResults
         .filter((result) => result.status === 'fulfilled')
-        .map((result) => result.value);
+        .map((result) => result.replica);
 
       failedReplicas = directWriteResults
-        .map((result, index) => ({ result, replica: plannedReplicas[index] }))
-        .filter((entry) => entry.result.status === 'rejected')
-        .map((entry) => ({
-          nodeId: entry.replica.nodeId,
-          url: entry.replica.url,
-          error: entry.result.reason?.message || 'direct write failed'
+        .filter((result) => result.status === 'rejected')
+        .map((result) => ({
+          nodeId: result.replica.nodeId,
+          url: result.replica.url,
+          error: result.error
         }));
     }
 
@@ -558,6 +593,8 @@ async function uploadFile(options) {
 
     if (failedReplicas.length > 0) {
       console.warn(`[upload] shard ${shardId} failed on ${failedReplicas.length} direct replica(s), final successes=${successfulReplicas.length}`);
+    } else if (successfulReplicas.length > 0) {
+      console.log(`[upload] shard ${shardId} stored on ${successfulReplicas.length} replica(s)`);
     }
 
     await api.post('/shards/register', {
