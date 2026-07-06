@@ -12,6 +12,10 @@ function normalizeUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
+function getReachableNodeUrl(node) {
+  return normalizeUrl(node?.publicUrl || node?.url);
+}
+
 function shuffleItems(items) {
   if (!Array.isArray(items) || items.length === 0) {
     return [];
@@ -128,7 +132,7 @@ async function claimPendingFilecoinBackupJob() {
 }
 
 async function fetchShardFromNode(node, shardId) {
-  const response = await axios.get(`${normalizeUrl(node.url)}/shards/${shardId}`, {
+  const response = await axios.get(`${getReachableNodeUrl(node)}/shards/${shardId}`, {
     responseType: 'arraybuffer',
     timeout: 5 * 60 * 1000,
     headers: {
@@ -170,7 +174,7 @@ async function pickSourceNodesForFile(fileId, shards) {
       { filecoinUploadLockUntil: { $lte: now } }
     ]
   })
-    .select('nodeId url nodeSecret')
+    .select('nodeId url publicUrl nodeSecret')
     .lean();
 
   const selected = shuffleItems(candidates);

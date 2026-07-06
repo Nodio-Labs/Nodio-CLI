@@ -31,6 +31,10 @@ function normalizeUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
+function getReachableNodeUrl(node) {
+  return normalizeUrl(node?.publicUrl || node?.url);
+}
+
 async function claimPendingRelayTasks(nodeId, limit = 10) {
   const pendingRelayTasks = await RelayTaskModel.find({
     nodeId,
@@ -78,10 +82,13 @@ function buildRoutes(config) {
 
   router.post('/nodes/register', async (req, res, next) => {
     try {
-      const { nodeId, deviceKey, nodeKey, nodeSecret: providedNodeSecret, knownNodeIds, url, capacityBytes, freeBytes } = req.body;
+      const { nodeId, deviceKey, nodeKey, nodeSecret: providedNodeSecret, knownNodeIds, url, publicUrl, capacityBytes, freeBytes } = req.body;
 
-      if (!url) {
-        return res.status(400).json({ error: 'url is required' });
+      const nodeUrl = String(publicUrl || url || '').trim();
+      const storedPublicUrl = String(publicUrl || '').trim() || null;
+
+      if (!nodeUrl) {
+        return res.status(400).json({ error: 'url or publicUrl is required' });
       }
 
       const capacity = Number(capacityBytes);
@@ -136,7 +143,8 @@ function buildRoutes(config) {
           },
           {
             $set: {
-              url,
+              url: nodeUrl,
+                publicUrl: storedPublicUrl,
               capacityBytes: capacity,
               freeBytes: free,
               status: 'online',
@@ -167,7 +175,8 @@ function buildRoutes(config) {
               nodeId: effectiveNodeId,
               ...(deviceKey ? { deviceKey } : {}),
               ...(nodeKey ? { nodeKey } : {}),
-              url,
+              url: nodeUrl,
+                publicUrl: storedPublicUrl,
               capacityBytes: capacity,
               freeBytes: free,
               status: 'online',
@@ -276,7 +285,7 @@ function buildRoutes(config) {
         tasksWithSourceUrl = [];
         for (const task of pendingTasks) {
           const source = await NodeModel.findOne({ nodeId: task.sourceNodeId, status: 'online' })
-            .select('url nodeId nodeSecret')
+            .select('url publicUrl nodeId nodeSecret')
             .lean();
 
           if (!source) {
@@ -297,7 +306,7 @@ function buildRoutes(config) {
             shardId: task.shardId,
             fileId: task.fileId,
             sourceNodeId: source.nodeId,
-            sourceUrl: source.url,
+            sourceUrl: getReachableNodeUrl(source),
             sourceNodeSecret: source.nodeSecret || null
           });
         }
@@ -922,7 +931,8 @@ function buildRoutes(config) {
         shardId,
         replicas: nodes.map((node) => ({
           nodeId: node.nodeId,
-          url: node.url,
+          url: getReachableNodeUrl(node),
+          publicUrl: node.publicUrl || null,
           nodeSecret: node.nodeSecret || null
         }))
       });
@@ -952,9 +962,9 @@ function buildRoutes(config) {
       const nodeIds = [...new Set(placements.map((placement) => placement.nodeId))];
 
       const onlineNodes = await NodeModel.find({ nodeId: { $in: nodeIds }, status: 'online' })
-        .select('nodeId url nodeSecret')
+        .select('nodeId url publicUrl nodeSecret')
         .lean();
-      const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, { url: node.url, nodeSecret: node.nodeSecret || null }]));
+      const nodeUrlMap = new Map(onlineNodes.map((node) => [node.nodeId, { url: getReachableNodeUrl(node), nodeSecret: node.nodeSecret || null }]));
 
       const shardDeleteFailures = [];
       let deleteAttempts = 0;
@@ -1033,9 +1043,9 @@ function buildRoutes(config) {
 
       const nodeIds = [...new Set(placements.map((placement) => placement.nodeId))];
       const nodes = await NodeModel.find({ nodeId: { $in: nodeIds }, status: 'online' })
-        .select('nodeId url nodeSecret')
+        .select('nodeId url publicUrl nodeSecret')
         .lean();
-      const nodeMap = new Map(nodes.map((node) => [node.nodeId, { url: node.url, nodeSecret: node.nodeSecret || null }]));
+      const nodeMap = new Map(nodes.map((node) => [node.nodeId, { url: getReachableNodeUrl(node), nodeSecret: node.nodeSecret || null }]));
 
       const shardManifests = shards.map((shard) => {
         const shardPlacements = placements

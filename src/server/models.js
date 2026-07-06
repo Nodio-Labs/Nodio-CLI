@@ -7,6 +7,7 @@ const nodeSchema = new mongoose.Schema(
     deviceKey: { type: String, index: true },
     nodeKey: { type: String, unique: true, sparse: true, index: true },
     url: { type: String, required: true },
+    publicUrl: { type: String, default: null },
     capacityBytes: { type: Number, required: true, min: 1 },
     freeBytes: { type: Number, required: true, min: 0 },
     status: { type: String, enum: ['online', 'offline'], default: 'online', index: true },

@@ -2,7 +2,9 @@
 const path = require('path');
 const os = require('os');
 const net = require('net');
+const fs = require('fs');
 const { Command } = require('commander');
+const { bin: cloudflaredBin, install: installCloudflared, Tunnel } = require('cloudflared');
 const { NodioNodeRuntime } = require('./runtime');
 
 const program = new Command();
@@ -68,6 +70,69 @@ function isLoopbackHost(host) {
   return normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1';
 }
 
+function normalizePublicUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+async function startCloudflareTunnel(localPort) {
+  if (!cloudflaredBin) {
+    throw new Error('cloudflared binary path is unavailable');
+  }
+
+  if (!fs.existsSync(cloudflaredBin)) {
+    try {
+      await installCloudflared(cloudflaredBin);
+    } catch (error) {
+      throw new Error(`cloudflared installation failed: ${error.message}`);
+    }
+  }
+
+  const localUrl = `http://127.0.0.1:${localPort}`;
+  const tunnel = Tunnel.quick(localUrl);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const complete = (error, publicUrl) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+
+      if (error) {
+        try {
+          tunnel.stop?.();
+        } catch {
+          // ignore tunnel shutdown errors during startup failures
+        }
+        reject(error);
+        return;
+      }
+
+      resolve({ publicUrl, tunnelProcess: tunnel });
+    };
+
+    tunnel.once('url', (url) => {
+      const publicUrl = normalizePublicUrl(url);
+      if (!publicUrl) {
+        complete(new Error('cloudflared published an empty tunnel URL'));
+        return;
+      }
+      complete(null, publicUrl);
+    });
+
+    tunnel.once('error', (error) => {
+      complete(new Error(`cloudflared tunnel error: ${error.message}`));
+    });
+
+    tunnel.once('exit', (code) => {
+      if (!settled) {
+        complete(new Error(`cloudflared exited before publishing a tunnel URL (code ${code})`));
+      }
+    });
+  });
+}
+
 program
   .name('nodio-node')
   .description('Nodio donor node CLI')
@@ -75,6 +140,7 @@ program
   .option('--node-id <id>', 'unique node ID (optional; auto-assigned and persisted if omitted)')
   .option('--server <url>', 'central server URL', 'https://api.nodio.me')
   .option('--host <host>', 'host/IP exposed to network (default: auto-detected LAN IP)', 'auto')
+  .option('--public-url <url>', 'explicit public URL for donor fetches, e.g. https://donor.example.com')
   .option('--port <port>', 'port to expose shard API (auto-picked when omitted)')
   .option('--storage-dir <path>', 'local shard storage directory (defaults to ~/.nodio-nodes/node-<port>)')
   .option('--capacity-gb <gb>', 'donated capacity in GB', '10')
@@ -95,6 +161,7 @@ program.action(async (capacityArg, options) => {
   const heartbeatMs = Number(options.heartbeatMs);
   const relayPollMs = Number(options.relayPollMs);
   const advertisedHost = options.host === 'auto' ? detectAdvertisedHost() : options.host;
+  const explicitPublicUrl = normalizePublicUrl(options.publicUrl);
   const storageDir = options.storageDir
     ? path.resolve(options.storageDir)
     : path.join(os.homedir(), '.nodio-nodes', `node-${port}`);
@@ -119,18 +186,61 @@ program.action(async (capacityArg, options) => {
     console.warn('[nodio-node] warning: loopback host is advertised; only this machine can reach this donor');
   }
 
-  const runtime = new NodioNodeRuntime({
-    nodeId: options.nodeId,
-    serverUrl: options.server,
-    publicUrl: `http://${advertisedHost}:${port}`,
-    port,
-    storageDir,
-    capacityBytes: Math.floor(capacityGb * 1024 * 1024 * 1024),
-    heartbeatIntervalMs: heartbeatMs,
-    relayPollIntervalMs: relayPollMs
+  let tunnelProcess = null;
+  let advertisedUrl = explicitPublicUrl;
+
+  if (!advertisedUrl) {
+    try {
+      const tunnel = await startCloudflareTunnel(port);
+      tunnelProcess = tunnel.tunnelProcess;
+      advertisedUrl = tunnel.publicUrl;
+      console.log(`[nodio-node] cloudflare tunnel ready: ${advertisedUrl}`);
+    } catch (error) {
+      console.warn(`[nodio-node] cloudflare tunnel unavailable, falling back to local URL: ${error.message}`);
+    }
+  }
+
+  if (!advertisedUrl) {
+    advertisedUrl = `http://${advertisedHost}:${port}`;
+  }
+
+  if (explicitPublicUrl) {
+    console.log(`[nodio-node] using explicit public URL: ${explicitPublicUrl}`);
+  }
+
+  const cleanupTunnel = () => {
+    if (tunnelProcess && !tunnelProcess.killed) {
+      tunnelProcess.kill('SIGTERM');
+    }
+  };
+
+  process.once('exit', cleanupTunnel);
+  process.once('SIGINT', () => {
+    cleanupTunnel();
+    process.exit(130);
+  });
+  process.once('SIGTERM', () => {
+    cleanupTunnel();
+    process.exit(143);
   });
 
-  await runtime.start();
+  try {
+    const runtime = new NodioNodeRuntime({
+      nodeId: options.nodeId,
+      serverUrl: options.server,
+      publicUrl: advertisedUrl,
+      port,
+      storageDir,
+      capacityBytes: Math.floor(capacityGb * 1024 * 1024 * 1024),
+      heartbeatIntervalMs: heartbeatMs,
+      relayPollIntervalMs: relayPollMs
+    });
+
+    await runtime.start();
+  } catch (error) {
+    cleanupTunnel();
+    throw error;
+  }
 });
 
 program.parseAsync(process.argv).catch((error) => {

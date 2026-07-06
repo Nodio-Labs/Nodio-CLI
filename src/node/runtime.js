@@ -139,6 +139,7 @@ class NodioNodeRuntime {
       nodeKey,
       nodeSecret,
       knownNodeIds,
+      publicUrl: this.publicUrl,
       url: this.publicUrl,
       capacityBytes: this.capacityBytes,
       freeBytes: await this.freeBytes()
