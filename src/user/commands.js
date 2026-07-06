@@ -566,10 +566,6 @@ async function uploadFile(options) {
         }));
     }
 
-    if (successfulReplicas.length === 0) {
-      allShardsBackedByPrivateNodes = false;
-    }
-
     if (failedReplicas.length > 0) {
       try {
         const relayResult = await relayStoreShard(api, {
@@ -584,6 +580,10 @@ async function uploadFile(options) {
       } catch (relayError) {
         console.warn(`[upload] relay store failed for shard ${shardId}: ${relayError.message}`);
       }
+    }
+
+    if (successfulReplicas.length === 0) {
+      allShardsBackedByPrivateNodes = false;
     }
 
     if (successfulReplicas.length === 0) {
